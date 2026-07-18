@@ -1,23 +1,22 @@
 # Telegram Voice Forwarder
 
-Dieses Tool überwacht eine oder mehrere Telegram-Gruppen und überträgt neue
-Sprachnachrichten mit deinem persönlichen Telegram-Account in einen privaten
-Kanal. Es verwendet Telegrams MTProto-API über Telethon; Audiodateien werden
-nicht lokal heruntergeladen.
+This tool monitors one or more Telegram groups and transfers new voice messages
+to a private channel using your personal Telegram account. It uses Telegram's
+MTProto API through Telethon; audio files are never downloaded locally.
 
-## Voraussetzungen
+## Requirements
 
-- Python 3.10 oder neuer
-- Dein Account ist Mitglied der Quellgruppen.
-- Dein Account darf im Zielkanal Nachrichten veröffentlichen.
-- Zustimmung der betroffenen Gruppenmitglieder bzw. eine passende
-  Rechtsgrundlage für die Weiterleitung
+- Python 3.10 or newer
+- Your account must be a member of the source groups.
+- Your account must have permission to post messages in the target channel.
+- Consent from the affected group members or another appropriate legal basis
+  for forwarding their messages
 
-## Einrichtung
+## Setup
 
-1. Öffne [my.telegram.org/apps](https://my.telegram.org/apps), registriere eine
-   Anwendung und notiere `api_id` und `api_hash`.
-2. Erstelle und aktiviere eine virtuelle Umgebung:
+1. Open [my.telegram.org/apps](https://my.telegram.org/apps), register an
+   application, and note its `api_id` and `api_hash`.
+2. Create and activate a virtual environment:
 
    ```powershell
    python -m venv .venv
@@ -25,100 +24,100 @@ nicht lokal heruntergeladen.
    python -m pip install -e .
    ```
 
-3. Kopiere `.env.example` nach `.env` und trage die Zugangsdaten ein:
+3. Copy `.env.example` to `.env` and enter your credentials:
 
    ```powershell
    Copy-Item .env.example .env
    ```
 
-4. Melde dich an und zeige deine Dialog-IDs an:
+4. Sign in and list your available Telegram dialog IDs:
 
    ```powershell
    python -m telegram_voice_forwarder list-chats
    ```
 
-   Beim ersten Aufruf fragt Telegram nach Telefonnummer, Login-Code und – falls
-   aktiviert – dem 2FA-Passwort. Danach liegt die Sitzung lokal unter
-   `TELEGRAM_SESSION`. Behandle die erzeugte `.session`-Datei wie ein Passwort.
+   On the first run, Telegram asks for your phone number, login code, and, if
+   enabled, your two-factor authentication password. The resulting session is
+   stored locally at `TELEGRAM_SESSION`. Treat the generated `.session` file
+   like a password.
 
-5. Trage Quell- und Ziel-ID in `.env` ein und starte das Monitoring:
+5. Add the source and target IDs to `.env`, then start monitoring:
 
    ```powershell
    python -m telegram_voice_forwarder run
    ```
 
-Mehrere Quellen werden mit Kommas getrennt:
+Separate multiple source chats with commas:
 
 ```dotenv
-TELEGRAM_SOURCE_CHATS=-1001234567890,@weitere_gruppe
+TELEGRAM_SOURCE_CHATS=-1001234567890,@another_group
 TELEGRAM_TARGET_CHAT=-1009876543210
 ```
 
-Kurze Sprachnachrichten können über eine Mindestdauer in Sekunden ausgefiltert
-werden. Dezimalwerte verwenden einen Punkt:
+You can filter out short voice messages by setting a minimum duration in
+seconds. Use a decimal point for fractional values:
 
 ```dotenv
 MIN_VOICE_DURATION_SECONDS=3.5
 ```
 
-Im Beispiel werden Nachrichten unter 3,5 Sekunden ignoriert; Nachrichten mit
-genau 3,5 Sekunden werden weitergeleitet. Der Standardwert `0` deaktiviert den
-Filter.
+In this example, messages shorter than 3.5 seconds are ignored, while messages
+that are exactly 3.5 seconds long are transferred. The default value `0`
+disables the filter.
 
-Telegram-IDs von Supergruppen und Kanälen beginnen in der Regel mit `-100`.
-Private Gruppen ohne öffentlichen Benutzernamen sollten über ihre numerische ID
-konfiguriert werden.
+Telegram IDs for supergroups and channels usually start with `-100`. Configure
+private groups without a public username by using their numeric ID.
 
-## Verhalten bei Neustarts
+## Restart behavior
 
-Beim ersten Start werden standardmäßig die 100 neuesten Nachrichten jeder
-Quelle geprüft. `INITIAL_SCAN_LIMIT=0` beginnt ohne historischen Import. Danach
-merkt sich das Tool pro Gruppe die letzte geprüfte Nachrichten-ID. Bereits
-weitergeleitete Nachrichten und fehlgeschlagene Versuche werden in SQLite
-gespeichert; dadurch werden Doppelweiterleitungen weitgehend vermieden und
-temporäre Fehler beim nächsten Start erneut versucht.
+On the first run, the tool inspects the 100 most recent messages in each source
+by default. Set `INITIAL_SCAN_LIMIT=0` to start without importing message
+history. Afterward, the tool stores the last inspected message ID for each
+group. Forwarded messages and failed attempts are persisted in SQLite, which
+largely prevents duplicates and allows temporary failures to be retried after a
+restart.
 
-Um den Scan-Zustand zurückzusetzen und beim nächsten Start erneut die neuesten
-`INITIAL_SCAN_LIMIT` Nachrichten zu prüfen:
+To reset the scan state and inspect the latest `INITIAL_SCAN_LIMIT` messages
+again on the next run:
 
 ```powershell
 python -m telegram_voice_forwarder reset
 ```
 
-Der Befehl löscht sowohl die Scan-Cursor als auch die Historie bereits
-weitergeleiteter oder ignorierter Nachrichten. Dadurch können die beim nächsten
-Scan gefundenen Nachrichten erneut weitergeleitet werden. Er verwendet den in
-`STATE_DB` konfigurierten Pfad und benötigt weder Telegram-Zugangsdaten noch
-eine Netzwerkverbindung. Stoppe das laufende Monitoring vor dem Zurücksetzen.
+This command removes both the scan cursors and the history of forwarded or
+ignored messages. Messages found during the next scan can therefore be
+transferred again. The command uses the path configured in `STATE_DB` and does
+not require Telegram credentials or a network connection. Stop the running
+monitor before resetting its state.
 
-Falls die Quellgruppe die Telegram-Einstellung zum Schützen von Inhalten
-aktiviert hat, verweigert Telegram die Weiterleitung. Das Tool protokolliert den
-Fehler, umgeht diese Schutzfunktion aber bewusst nicht.
+If the source group has Telegram's content protection setting enabled,
+Telegram refuses the transfer. The tool logs this error and deliberately does
+not attempt to bypass the protection.
 
-Voice-Notes werden als einzelne Nachricht mit dem ursprünglichen Text, dem
-Anzeigenamen des ursprünglichen Autors, dem Originaldatum in lokaler Zeitzone
-und einem klickbaren Link
-`Ursprungsnachricht` im Zielkanal veröffentlicht. Wenn vorhanden, wird zusätzlich
-der öffentliche `@username` angegeben. Bei anonymen Admin-Beiträgen verwendet
-das Tool nach Möglichkeit die Telegram-Autorensignatur. Telegrams
-Forward-API erlaubt keine zusätzliche Caption; deshalb verwendet das Tool die
-bereits bei Telegram gespeicherte Medienreferenz als serverseitige Kopie. Es
-findet weiterhin kein Download oder erneuter Upload der Audiodatei statt. Links
-auf private Supergruppen funktionieren nur für Telegram-Nutzer, die Mitglied der
-Quellgruppe sind. Runde Video-Nachrichten werden ohne Link normal weitergeleitet,
-da Telegram für Video-Notes keine Caption unterstützt.
+Each voice note is published as a single message containing the original text,
+the original author's display name, the original timestamp in the local time
+zone, and a clickable `Original message` link. If available, the author's public
+`@username` is included as well. For posts from anonymous administrators, the
+tool uses Telegram's author signature when available.
 
-## Dauerbetrieb
+Telegram's forwarding API does not allow adding a custom caption. The tool
+therefore creates a server-side copy using the media reference already stored
+by Telegram. The audio file is still neither downloaded nor uploaded again.
+Links to private supergroups only work for Telegram users who are members of
+the source group. Round video messages are forwarded normally without a link
+because Telegram does not support captions on video notes.
 
-Unter Linux kann der Prozess beispielsweise als systemd-Dienst laufen. Wichtig
-ist, dass `.session`-Datei und SQLite-Datenbank auf einem persistenten,
-zugriffsgeschützten Datenträger liegen. Ein normaler Prozess-Stopp mit `Ctrl+C`
-schließt die Verbindung und die Datenbank sauber.
+## Running continuously
 
-## Sicherheit und Telegram-Regeln
+On Linux, the process can run as a systemd service, for example. Make sure the
+`.session` file and SQLite database are stored on a persistent volume with
+restricted access. A normal process stop with `Ctrl+C` closes the connection
+and database cleanly.
 
-Die verwendete Session gewährt Zugriff auf den Telegram-Account. Sie darf nie
-committet, geteilt oder in ein öffentliches Container-Image eingebaut werden.
-Telegram weist außerdem darauf hin, dass Drittanbieter-Clients überwacht werden
-und Missbrauch wie Spam zur Sperre führen kann. Verwende das Tool nur in
-Gruppen, in denen du die Nachrichten weiterleiten darfst.
+## Security and Telegram rules
+
+The session grants access to your Telegram account. Never commit or share it,
+and never include it in a public container image. Telegram also notes that
+third-party clients are monitored and that abuse such as spam can result in an
+account ban. Only use this tool in groups where you are allowed to transfer the
+messages.
