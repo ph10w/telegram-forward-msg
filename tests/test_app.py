@@ -4,10 +4,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from telegram_voice_forwarder.app import (
     VoiceForwarder,
+    build_client,
     linked_caption,
     message_author,
     telegram_message_link,
@@ -24,6 +25,7 @@ def test_config(root: Path) -> ForwarderConfig:
         session_path=root / "session",
         state_db=root / "state.sqlite3",
         log_level="INFO",
+        entity_cache_limit=500,
         source_chats=(-1001,),
         target_chat=-1002,
         initial_scan_limit=100,
@@ -43,6 +45,14 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.forwarder = VoiceForwarder(self.client, test_config(root), self.state)
         self.forwarder.target = object()
+
+    def test_builds_client_with_configured_entity_cache_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = test_config(Path(temp_dir))
+            with patch("telegram_voice_forwarder.app.TelegramClient") as client_class:
+                build_client(config)
+
+        self.assertEqual(client_class.call_args.kwargs["entity_cache_limit"], 500)
 
     async def asyncTearDown(self) -> None:
         self.state.close()

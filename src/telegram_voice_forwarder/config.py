@@ -80,6 +80,7 @@ class BaseConfig:
     session_path: Path
     state_db: Path
     log_level: str
+    entity_cache_limit: int
 
     @classmethod
     def from_env(cls) -> "BaseConfig":
@@ -92,6 +93,7 @@ class BaseConfig:
             session_path=Path(os.getenv("TELEGRAM_SESSION", "data/telegram-monitor")),
             state_db=Path(os.getenv("STATE_DB", "data/forwarder.sqlite3")),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
+            entity_cache_limit=_integer("TELETHON_ENTITY_CACHE_LIMIT", 500, minimum=100),
         )
 
 
@@ -117,6 +119,7 @@ class ForwarderConfig(BaseConfig):
             session_path=base.session_path,
             state_db=base.state_db,
             log_level=base.log_level,
+            entity_cache_limit=base.entity_cache_limit,
             source_chats=sources,
             target_chat=parse_chat_ref(_required("TELEGRAM_TARGET_CHAT")),
             initial_scan_limit=_integer("INITIAL_SCAN_LIMIT", 100),

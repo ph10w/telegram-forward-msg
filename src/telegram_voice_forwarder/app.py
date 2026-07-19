@@ -130,6 +130,7 @@ def build_client(config: BaseConfig) -> TelegramClient:
         auto_reconnect=True,
         connection_retries=None,
         retry_delay=2,
+        entity_cache_limit=config.entity_cache_limit,
     )
 
 

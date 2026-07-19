@@ -68,6 +68,15 @@ disables the filter.
 Telegram IDs for supergroups and channels usually start with `-100`. Configure
 private groups without a public username by using their numeric ID.
 
+Telethon keeps recently encountered users, chats, and channels in memory. This
+project reduces Telethon's default cache limit from 5,000 to 500 entities. You
+can adjust it in `.env`, but values below 100 are rejected because an
+undersized cache can cause excessive session-database writes:
+
+```dotenv
+TELETHON_ENTITY_CACHE_LIMIT=500
+```
+
 ## Restart behavior
 
 On the first run, the tool inspects the 100 most recent messages in each source
@@ -137,8 +146,7 @@ Before installing the service:
 
 The script installs the `TelegramVoiceForwarder` service, configures automatic
 startup and restart behavior, and starts it immediately. It aborts without
-changing anything if a service with that name already exists; it does not
-migrate NSSM or other existing service installations.
+changing anything if a service with that name already exists.
 Application output is written to rotating `data\logs\service_rCURRENT.log`
 files, while Shawl diagnostics are written to
 `data\logs\shawl_rCURRENT.log`.
