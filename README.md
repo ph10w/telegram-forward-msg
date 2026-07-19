@@ -114,6 +114,55 @@ On Linux, the process can run as a systemd service, for example. Make sure the
 restricted access. A normal process stop with `Ctrl+C` closes the connection
 and database cleanly.
 
+### Windows service
+
+Windows cannot run a regular Python console application directly as a native
+service. The included installer uses
+[Shawl](https://github.com/mtkennerly/shawl) as the service wrapper.
+
+Before installing the service:
+
+1. Download `shawl.exe` from the
+   [Shawl releases](https://github.com/mtkennerly/shawl/releases) and place it
+   in `tools\shawl.exe`, or make it available through `PATH`. Alternatively,
+   set the `SHAWL_EXE` environment variable to its full path.
+2. Complete the normal project setup and interactive Telegram login first. A
+   service cannot answer the phone-number, login-code, or 2FA prompts.
+3. Open an Administrator Command Prompt or PowerShell window in the project
+   directory and run:
+
+   ```powershell
+   .\scripts\install-windows-service.bat
+   ```
+
+The script installs the `TelegramVoiceForwarder` service, configures automatic
+startup and restart behavior, and starts it immediately. It aborts without
+changing anything if a service with that name already exists; it does not
+migrate NSSM or other existing service installations.
+Application output is written to rotating `data\logs\service_rCURRENT.log`
+files, while Shawl diagnostics are written to
+`data\logs\shawl_rCURRENT.log`.
+
+A newly created Shawl service runs as `LocalSystem` by default. Keep `.env` and
+the Telegram session protected with restrictive file permissions. If the
+service should use a dedicated Windows account, configure that account after
+installation in `services.msc`.
+
+Useful service commands:
+
+```powershell
+sc.exe query TelegramVoiceForwarder
+sc.exe stop TelegramVoiceForwarder
+sc.exe start TelegramVoiceForwarder
+```
+
+To remove the service, stop it and run the following command from an elevated
+terminal:
+
+```powershell
+sc.exe delete TelegramVoiceForwarder
+```
+
 ## Security and Telegram rules
 
 The session grants access to your Telegram account. Never commit or share it,
