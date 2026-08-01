@@ -22,10 +22,25 @@ echo.
 
 powershell.exe -NoProfile -Command ^
   "$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }"
-if errorlevel 1 (
-    echo ERROR: Run this batch file from an elevated Administrator terminal.
-    exit /b 1
-)
+if not errorlevel 1 goto :elevated
+
+if defined GSUDO_EXE goto :check_gsudo_path
+where.exe gsudo.exe >nul 2>&1
+if errorlevel 1 goto :gsudo_missing
+set "GSUDO_EXE=gsudo.exe"
+goto :launch_elevated
+
+:check_gsudo_path
+if not exist "%GSUDO_EXE%" goto :gsudo_missing
+
+:launch_elevated
+echo Administrator rights are required. Restarting through gsudo...
+"%GSUDO_EXE%" --chdir "%PROJECT_DIR%" "%~f0" %*
+set "GSUDO_EXIT=%ERRORLEVEL%"
+if "%GSUDO_EXIT%"=="999" echo ERROR: gsudo could not elevate the installer.
+exit /b %GSUDO_EXIT%
+
+:elevated
 
 if not exist "%PYTHON_EXE%" (
     echo ERROR: Virtual-environment Python was not found:
@@ -129,6 +144,15 @@ echo ERROR: Shawl was not found.
 echo Put shawl.exe in "%PROJECT_DIR%\tools", add it to PATH,
 echo or set SHAWL_EXE to its full path.
 echo Shawl releases: https://github.com/mtkennerly/shawl/releases
+exit /b 1
+
+:gsudo_missing
+echo ERROR: Administrator rights are required and gsudo was not found.
+echo Install it with:
+echo   winget install gerardog.gsudo
+echo Then restart the terminal, add gsudo.exe to PATH, or set GSUDO_EXE
+echo to its full path. Alternatively, run this script from an elevated terminal.
+echo Documentation: https://gerardog.github.io/gsudo/docs/usage
 exit /b 1
 
 :install_failed

@@ -4,14 +4,22 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from telethon import TelegramClient, events, helpers, utils
 from telethon.errors import FloodWaitError, RPCError
 from telethon.tl.types import MessageEntityTextUrl
 
-from .config import BaseConfig, ForwarderConfig
-from .state import StateStore
+from .config import ForwarderConfig
+from .core import (
+    ActiveBlock as CoreActiveBlock,
+    BlockCloseReason,
+    BlockPolicy,
+    MessageAction,
+    MessageFacts,
+)
+from .ports import MonitoringStateRepository
 
 LOGGER = logging.getLogger(__name__)
 CAPTION_LIMIT = 1024
@@ -39,6 +47,15 @@ def media_duration_seconds(message: Any) -> float | None:
         return None
 
 
+def message_timestamp(message: Any) -> datetime:
+    value = getattr(message, "date", None)
+    if not isinstance(value, datetime):
+        return datetime.now(UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def telegram_message_link(
     source_id: int, message_id: int, *, username: str | None = None
 ) -> str | None:
@@ -50,10 +67,16 @@ def telegram_message_link(
     return None
 
 
-async def message_author(message: Any) -> str | None:
+async def message_author(message: Any) -> str:
+    _, label = await message_author_details(message)
+    return label
+
+
+async def message_author_details(message: Any) -> tuple[str, str]:
     post_author = (getattr(message, "post_author", None) or "").strip()
     if post_author:
-        return " ".join(post_author.splitlines())
+        label = " ".join(post_author.splitlines())
+        return f"signature:{label.casefold()}", label
 
     sender = getattr(message, "sender", None)
     get_sender = getattr(message, "get_sender", None)
@@ -63,7 +86,7 @@ async def message_author(message: Any) -> str | None:
         except RPCError:
             LOGGER.warning("Autor von Nachricht %s konnte nicht geladen werden", message.id)
     if sender is None:
-        return None
+        return "unknown", "Unbekannter Autor"
 
     name = " ".join(utils.get_display_name(sender).splitlines()).strip()
     if not name:
@@ -77,25 +100,36 @@ async def message_author(message: Any) -> str | None:
         ) or (getattr(sender, "title", None) or "").strip()
     username = (getattr(sender, "username", None) or "").strip().lstrip("@")
     if name and username:
-        return f"{name} (@{username})"
+        label = f"{name} (@{username})"
+    elif username:
+        label = f"@{username}"
+    else:
+        label = name or "Unbekannter Autor"
+
+    sender_id = getattr(message, "sender_id", None) or getattr(sender, "id", None)
+    if sender_id is not None:
+        return f"sender:{sender_id}", label
     if username:
-        return f"@{username}"
-    return name or None
+        return f"username:{username.casefold()}", label
+    return f"label:{label.casefold()}", label
+
+
+def collection_header(author: str, count: int) -> str:
+    noun = "Sprachnachricht" if count == 1 else "Sprachnachrichten"
+    return f"👤 Autor: {author}\n🎙️ {count} {noun}"
 
 
 def linked_caption(
     message: Any,
     link: str,
     *,
-    author: str | None = None,
     original_date: str | None = None,
 ) -> tuple[str, list[Any]]:
     original = getattr(message, "raw_text", None) or ""
     separator = "\n\n" if original else ""
-    author_text = f"👤 Autor: {author}\n" if author else ""
-    date_text = f"🕒 Originaldatum: {original_date}\n" if original_date else ""
-    link_text = f"🔗 {SOURCE_LINK_LABEL}"
-    suffix = separator + author_text + date_text + link_text
+    label = original_date or SOURCE_LINK_LABEL
+    link_text = f"🕒 {label}"
+    suffix = separator + link_text
     caption = original + suffix
     entities = list(getattr(message, "entities", None) or [])
 
@@ -107,57 +141,18 @@ def linked_caption(
             shortened = shortened[:-1]
         original = helpers.del_surrogate(shortened).rstrip() + "…"
         separator = "\n\n" if original else ""
-        caption = original + separator + author_text + date_text + link_text
+        caption = original + separator + link_text
         entities = []
 
-    label_prefix = original + separator + author_text + date_text + "🔗 "
+    label_prefix = original + separator + "🕒 "
     entities.append(
         MessageEntityTextUrl(
             offset=len(helpers.add_surrogate(label_prefix)),
-            length=len(helpers.add_surrogate(SOURCE_LINK_LABEL)),
+            length=len(helpers.add_surrogate(label)),
             url=link,
         )
     )
     return caption, entities
-
-
-def build_client(config: BaseConfig) -> TelegramClient:
-    config.session_path.parent.mkdir(parents=True, exist_ok=True)
-    return TelegramClient(
-        str(config.session_path),
-        config.api_id,
-        config.api_hash,
-        auto_reconnect=True,
-        connection_retries=None,
-        retry_delay=2,
-        entity_cache_limit=config.entity_cache_limit,
-    )
-
-
-async def start_client(client: TelegramClient, config: BaseConfig) -> None:
-    await client.start(phone=config.phone)
-    me = await client.get_me()
-    LOGGER.info("Angemeldet als %s (ID %s)", utils.get_display_name(me), me.id)
-
-
-async def list_dialogs(config: BaseConfig) -> None:
-    client = build_client(config)
-    try:
-        await start_client(client, config)
-        print(f"{'ID':>16}  {'Typ':<10}  Name")
-        print(f"{'-' * 16}  {'-' * 10}  {'-' * 40}")
-        async for dialog in client.iter_dialogs():
-            if dialog.is_group:
-                kind = "Gruppe"
-            elif dialog.is_channel:
-                kind = "Kanal"
-            elif dialog.is_user:
-                kind = "Benutzer"
-            else:
-                kind = "Sonstiges"
-            print(f"{dialog.id:>16}  {kind:<10}  {dialog.name}")
-    finally:
-        await client.disconnect()
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +167,7 @@ class VoiceForwarder:
         self,
         client: TelegramClient,
         config: ForwarderConfig,
-        state: StateStore,
+        state: MonitoringStateRepository,
     ) -> None:
         self.client = client
         self.config = config
@@ -206,43 +201,168 @@ class VoiceForwarder:
             self.target_id,
         )
 
-    async def process_message(self, source_id: int, message: Any) -> None:
-        if not is_voice_message(
+    async def process_message(
+        self,
+        source_id: int,
+        message: Any,
+        *,
+        assigned_block_id: int | None = None,
+    ) -> None:
+        is_voice = is_voice_message(
             message, include_video_notes=self.config.include_video_notes
+        )
+        if is_voice and self.state.is_complete(source_id, message.id):
+            self.state.advance_cursor(source_id, message.id)
+            return
+
+        message_at = message_timestamp(message)
+        block = (
+            self.state.voice_block(assigned_block_id)
+            if assigned_block_id is not None
+            else None
+        )
+        if block is not None and (
+            block.source_id != source_id or block.target_chat_id != self.target_id
         ):
-            self.state.advance_cursor(source_id, message.id)
-            return
+            block = None
 
-        if self.state.is_complete(source_id, message.id):
-            self.state.advance_cursor(source_id, message.id)
-            return
+        if block is None:
+            active = self.state.active_voice_block(source_id)
+            author_key: str | None = None
+            author_label: str | None = None
+            duration: float | None = None
+            if is_voice:
+                author_key, author_label = await message_author_details(message)
+                duration = media_duration_seconds(message)
+            if self.target_id is None:
+                raise RuntimeError("Zielchat-ID ist nicht aufgelöst.")
+            decision = BlockPolicy(
+                minimum_voice_duration_seconds=(
+                    self.config.min_voice_duration_seconds
+                ),
+                target_chat_id=self.target_id,
+            ).decide(
+                MessageFacts(
+                    is_voice=is_voice,
+                    observed_at=message_at,
+                    duration_seconds=duration,
+                    author_key=author_key,
+                ),
+                CoreActiveBlock(
+                    author_key=active.author_key,
+                    target_chat_id=active.target_chat_id,
+                    non_voice_count=active.non_voice_count,
+                    last_voice_at=active.last_voice_at,
+                )
+                if active is not None
+                else None,
+            )
 
-        minimum = self.config.min_voice_duration_seconds
-        duration = media_duration_seconds(message)
-        if minimum > 0 and duration is not None and duration < minimum:
-            self.state.mark_ignored(
-                source_id,
-                message.id,
-                f"Dauer {duration:g}s liegt unter dem Minimum von {minimum:g}s",
-            )
-            LOGGER.info(
-                "Kurze Sprachnachricht ignoriert (Quelle %s, Nachricht %s, %.1fs < %.1fs)",
-                source_id,
-                message.id,
-                duration,
-                minimum,
-            )
-            return
-        if minimum > 0 and duration is None:
-            LOGGER.warning(
-                "Dauer nicht ermittelbar; Nachricht %s aus Quelle %s wird weitergeleitet",
-                message.id,
-                source_id,
-            )
+            if decision.close_reason is BlockCloseReason.TIMEOUT:
+                if active is not None:
+                    self.state.close_active_voice_block(
+                        source_id, active.last_observed_message_id
+                    )
+                LOGGER.info(
+                    "Voice-Block in Quelle %s nach vier Stunden Inaktivität geschlossen",
+                    source_id,
+                )
+                active = None
+            elif decision.close_reason is BlockCloseReason.DIFFERENT_AUTHOR_OR_TARGET:
+                self.state.close_active_voice_block(source_id, message.id)
+                active = None
 
-        self.state.mark_pending(source_id, message.id)
+            if decision.action is MessageAction.SKIP_NON_VOICE:
+                self.state.advance_cursor(source_id, message.id)
+                return
+            if decision.action in (
+                MessageAction.RECORD_NON_VOICE,
+                MessageAction.CLOSE_ON_NON_VOICE,
+            ):
+                should_close = decision.action is MessageAction.CLOSE_ON_NON_VOICE
+                self.state.note_non_voice(
+                    source_id, message.id, close=should_close
+                )
+                if should_close:
+                    LOGGER.info(
+                        "Voice-Block in Quelle %s nach fünf "
+                        "Nicht-Voice-Nachrichten geschlossen",
+                        source_id,
+                    )
+                self.state.advance_cursor(source_id, message.id)
+                return
+            if decision.action is MessageAction.IGNORE_SHORT_VOICE:
+                minimum = self.config.min_voice_duration_seconds
+                self.state.mark_ignored(
+                    source_id,
+                    message.id,
+                    f"Dauer {duration:g}s liegt unter dem Minimum von {minimum:g}s",
+                    message_at=message_at,
+                )
+                LOGGER.info(
+                    "Kurze erste Sprachnachricht ignoriert "
+                    "(Quelle %s, Nachricht %s, %.1fs < %.1fs)",
+                    source_id,
+                    message.id,
+                    duration,
+                    minimum,
+                )
+                return
+            if decision.action is MessageAction.JOIN_BLOCK:
+                if active is None:
+                    raise RuntimeError("Aktiver Voice-Block fehlt.")
+                block = active
+            else:
+                if author_key is None or author_label is None:
+                    raise RuntimeError("Autor der Voice-Nachricht fehlt.")
+                if self.config.min_voice_duration_seconds > 0 and duration is None:
+                    LOGGER.warning(
+                        "Dauer nicht ermittelbar; Nachricht %s aus Quelle %s "
+                        "eröffnet einen Voice-Block",
+                        message.id,
+                        source_id,
+                    )
+
+                self.state.mark_pending(
+                    source_id, message.id, message_at=message_at
+                )
+                try:
+                    header = await self.client.send_message(
+                        self.target,
+                        collection_header(author_label, 1),
+                        parse_mode=None,
+                    )
+                    header_id = getattr(header, "id", None)
+                    if not isinstance(header_id, int):
+                        raise RuntimeError("Ziel-ID der Sammelnachricht fehlt.")
+                    block = self.state.create_voice_block(
+                        source_id,
+                        author_key,
+                        author_label,
+                        self.target_id,
+                        header_id,
+                        message.id,
+                        message_at,
+                    )
+                except Exception as exc:
+                    self.state.mark_failed(
+                        source_id, message.id, f"{type(exc).__name__}: {exc}"
+                    )
+                    LOGGER.exception(
+                        "Sammelnachricht fehlgeschlagen (Quelle %s, Nachricht %s)",
+                        source_id,
+                        message.id,
+                    )
+                    return
+
+        self.state.mark_pending(
+            source_id,
+            message.id,
+            block_id=block.id,
+            message_at=message_at,
+        )
         try:
-            await self._send_with_retry(source_id, message)
+            target_message_id = await self._send_with_retry(source_id, message)
         except Exception as exc:
             self.state.mark_failed(source_id, message.id, f"{type(exc).__name__}: {exc}")
             LOGGER.exception(
@@ -252,7 +372,34 @@ class VoiceForwarder:
             )
             return
 
-        self.state.mark_forwarded(source_id, message.id)
+        block_count = self.state.mark_forwarded(
+            source_id,
+            message.id,
+            target_chat_id=self.target_id,
+            target_message_id=target_message_id,
+            block_id=block.id,
+            message_at=message_at,
+        )
+        if target_message_id is None:
+            LOGGER.warning(
+                "Ziel-Nachrichten-ID für Quelle %s, Nachricht %s nicht ermittelbar; "
+                "diese Zielnachricht kann bei einem Reset nicht automatisch gelöscht werden",
+                source_id,
+                message.id,
+            )
+        if block_count is not None and block_count > 1:
+            try:
+                await self.client.edit_message(
+                    self.target,
+                    block.header_message_id,
+                    collection_header(block.author_label, block_count),
+                    parse_mode=None,
+                )
+            except RPCError:
+                LOGGER.exception(
+                    "Anzahl in Sammelnachricht %s konnte nicht aktualisiert werden",
+                    block.header_message_id,
+                )
         LOGGER.info(
             "Sprachnachricht weitergeleitet (Quelle %s, Nachricht %s)",
             source_id,
@@ -261,14 +408,13 @@ class VoiceForwarder:
 
     async def _send_with_retry(
         self, source_id: int, message: Any, retries: int = 3
-    ) -> None:
+    ) -> int | None:
         source = self.sources.get(source_id)
         username = getattr(source.entity, "username", None) if source else None
         link = telegram_message_link(source_id, message.id, username=username)
         caption: str | None = None
         entities: list[Any] | None = None
         if message.voice and link:
-            author = await message_author(message)
             message_date = getattr(message, "date", None)
             original_date = (
                 message_date.astimezone().strftime("%d.%m.%Y %H:%M:%S")
@@ -278,14 +424,13 @@ class VoiceForwarder:
             caption, entities = linked_caption(
                 message,
                 link,
-                author=author,
                 original_date=original_date,
             )
 
         for attempt in range(1, retries + 1):
             try:
                 if message.voice and link:
-                    await self.client.send_file(
+                    sent = await self.client.send_file(
                         self.target,
                         message.voice,
                         caption=caption,
@@ -293,8 +438,11 @@ class VoiceForwarder:
                         voice_note=True,
                     )
                 else:
-                    await self.client.forward_messages(self.target, message)
-                return
+                    sent = await self.client.forward_messages(self.target, message)
+                if isinstance(sent, (list, tuple)):
+                    sent = sent[0] if sent else None
+                sent_id = getattr(sent, "id", None)
+                return int(sent_id) if isinstance(sent_id, int) else None
             except FloodWaitError as exc:
                 if attempt == retries or exc.seconds > 60:
                     raise
@@ -326,12 +474,16 @@ class VoiceForwarder:
                     job.source_id,
                 )
                 continue
-            await self.process_message(job.source_id, message)
+            await self.process_message(
+                job.source_id,
+                message,
+                assigned_block_id=job.block_id,
+            )
 
     async def catch_up(self) -> None:
         for source in self.sources.values():
             cursor = self.state.cursor(source.id)
-            if cursor == 0:
+            if not self.state.has_cursor(source.id):
                 await self._initial_scan(source)
             else:
                 count = 0
@@ -380,14 +532,3 @@ class VoiceForwarder:
 
         LOGGER.info("Monitoring läuft. Beenden mit Ctrl+C.")
         await self.client.run_until_disconnected()
-
-
-async def run_forwarder(config: ForwarderConfig) -> None:
-    client = build_client(config)
-    state = StateStore(config.state_db)
-    try:
-        await start_client(client, config)
-        await VoiceForwarder(client, config, state).run()
-    finally:
-        state.close()
-        await client.disconnect()

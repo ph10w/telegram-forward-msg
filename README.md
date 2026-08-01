@@ -61,9 +61,10 @@ seconds. Use a decimal point for fractional values:
 MIN_VOICE_DURATION_SECONDS=3.5
 ```
 
-In this example, messages shorter than 3.5 seconds are ignored, while messages
-that are exactly 3.5 seconds long are transferred. The default value `0`
-disables the filter.
+In this example, a voice message shorter than 3.5 seconds cannot start a new
+collection block, while a message that is exactly 3.5 seconds long can. Once a
+block is open, every following voice message from the same author is included,
+regardless of its duration. The default value `0` disables the filter.
 
 Telegram IDs for supergroups and channels usually start with `-100`. Configure
 private groups without a public username by using their numeric ID.
@@ -95,19 +96,60 @@ python -m telegram_voice_forwarder reset
 
 This command removes both the scan cursors and the history of forwarded or
 ignored messages. Messages found during the next scan can therefore be
-transferred again. The command uses the path configured in `STATE_DB` and does
-not require Telegram credentials or a network connection. Stop the running
-monitor before resetting its state.
+transferred again. It also deletes the associated messages created by this
+tool in the currently configured `TELEGRAM_TARGET_CHAT`. Stop the running
+monitor before resetting its state. The command connects to Telegram and
+therefore requires the configured credentials, authorized session, and
+permission to delete the account's messages in the target chat.
+
+To reset only a recent time period, append a positive number and `H` (hours),
+`D` (days), or `W` (weeks) to `reset`:
+
+```powershell
+python -m telegram_voice_forwarder reset=1W
+```
+
+This example moves each source cursor back to the last Telegram message before
+the one-week cutoff and removes the known-message history after that boundary.
+The next monitoring run therefore scans the complete last week, independently
+of `INITIAL_SCAN_LIMIT`. Every processed voice message stores its original
+Telegram timestamp as `source_message_at`; this timestamp is the primary
+criterion for a time-limited reset. If a block's `last_voice_at` falls inside
+the reset window, the reset expands to the block's first message and removes
+all of its voice messages and its header from the target. This allows the whole
+block and its count to be rebuilt consistently. A time-limited reset also
+queries Telegram to determine the cursor boundary. Older database rows without
+`source_message_at` use their source message ID and that boundary as a
+compatibility fallback.
+
+Target-message IDs are stored for new forwards after this feature is installed.
+Messages created by older versions do not have this association and cannot be
+deleted automatically. The reset reports how many such messages could not be
+matched. It also refuses to delete a stored message if its target-chat ID does
+not match the currently configured target. If Telegram rejects a deletion, the
+local cursor and history are left unchanged.
 
 If the source group has Telegram's content protection setting enabled,
 Telegram refuses the transfer. The tool logs this error and deliberately does
 not attempt to bypass the protection.
 
-Each voice note is published as a single message containing the original text,
-the original author's display name, the original timestamp in the local time
-zone, and a clickable `Original message` link. If available, the author's public
-`@username` is included as well. For posts from anonymous administrators, the
-tool uses Telegram's author signature when available.
+Voice notes are organized into collection blocks. Each block starts with a
+separate header containing the author's display name and the number of voice
+notes in the block. The header is edited whenever another voice note joins the
+current block. If available, the author's public `@username` is included. For
+posts from anonymous administrators, the tool uses Telegram's author signature.
+
+A voice note from a different author closes the current block, even if that
+note is too short to open a new block. Non-voice messages do not immediately
+interrupt a collection: up to four consecutive non-voice messages are allowed.
+The fifth closes the block. A voice note that joins the block resets this gap
+counter. A block also closes after four hours without an accepted voice note.
+The timeout is checked against Telegram's original message timestamps during
+historical scans and whenever a new source-channel update is processed.
+
+Each copied voice note preserves its original text and ends with the original
+local date and time as a clickable link to the source message. The date is the
+link label, so it is not repeated separately.
 
 Telegram's forwarding API does not allow adding a custom caption. The tool
 therefore creates a server-side copy using the media reference already stored
@@ -115,6 +157,36 @@ by Telegram. The audio file is still neither downloaded nor uploaded again.
 Links to private supergroups only work for Telegram users who are members of
 the source group. Round video messages are forwarded normally without a link
 because Telegram does not support captions on video notes.
+
+## Architecture
+
+Collection rules such as author changes, minimum duration, non-voice gaps, and
+the four-hour timeout live in `core.py`. The same module creates explicit reset
+plans from neutral snapshots. It has no Telethon or SQLite dependency and can
+be tested with plain value objects from `models.py`. Repository contracts live
+in `ports.py`; `state.py` is their SQLite adapter and only loads data or applies
+explicit decisions atomically. `app.py` translates Telegram updates into core
+values and executes the resulting decisions. The reset workflow lives in
+`reset_service.py`, while `cli.py` is limited to argument parsing, command
+dispatch, and console output.
+
+The call direction is deliberately one-way:
+
+```text
+__main__ → cli → bootstrap (composition root)
+                       ├─→ monitoring orchestrator → core/ports
+                       ├─→ reset use case      → core/ports
+                       ├─→ Telegram adapter
+                       └─→ SQLite adapter      → core/models
+
+Telegram update → event handler → process message → core decision
+                                                       └─→ ports
+```
+
+Lower layers never call back into their callers. Use cases never construct or
+import concrete adapters; `bootstrap.py` is the only module that wires them
+together. Architecture tests reject unapproved internal imports as well as
+import, local-function, and class-method call cycles.
 
 ## Running continuously
 
@@ -131,14 +203,23 @@ service. The included installer uses
 
 Before installing the service:
 
-1. Download `shawl.exe` from the
+1. Install [gsudo](https://gerardog.github.io/gsudo/docs/install) if the script
+   should be started from a normal, non-elevated terminal:
+
+   ```powershell
+   winget install gerardog.gsudo
+   ```
+
+   Restart the terminal after installation. Alternatively, set `GSUDO_EXE` to
+   the full path of `gsudo.exe`. gsudo is not required when the terminal is
+   already running as Administrator.
+2. Download `shawl.exe` from the
    [Shawl releases](https://github.com/mtkennerly/shawl/releases) and place it
    in `tools\shawl.exe`, or make it available through `PATH`. Alternatively,
    set the `SHAWL_EXE` environment variable to its full path.
-2. Complete the normal project setup and interactive Telegram login first. A
+3. Complete the normal project setup and interactive Telegram login first. A
    service cannot answer the phone-number, login-code, or 2FA prompts.
-3. Open an Administrator Command Prompt or PowerShell window in the project
-   directory and run:
+4. Open Command Prompt or PowerShell in the project directory and run:
 
    ```powershell
    .\scripts\install-windows-service.bat
@@ -146,7 +227,10 @@ Before installing the service:
 
 The script installs the `TelegramVoiceForwarder` service, configures automatic
 startup and restart behavior, and starts it immediately. It aborts without
-changing anything if a service with that name already exists.
+changing anything if a service with that name already exists. When necessary,
+the complete installer restarts once through gsudo in the current console, so
+only one UAC confirmation is needed. The elevated run returns its exit code to
+the original process.
 Application output is written to rotating `data\logs\service_rCURRENT.log`
 files, while Shawl diagnostics are written to
 `data\logs\shawl_rCURRENT.log`.
@@ -164,12 +248,17 @@ sc.exe stop TelegramVoiceForwarder
 sc.exe start TelegramVoiceForwarder
 ```
 
-To remove the service, stop it and run the following command from an elevated
-terminal:
+To stop and remove the service, run the included uninstaller from a normal or
+elevated terminal:
 
 ```powershell
-sc.exe delete TelegramVoiceForwarder
+.\scripts\uninstall-windows-service.bat
 ```
+
+Like the installer, it uses gsudo when elevation is required. It waits for the
+service to stop, removes its Windows service registration, and returns success
+when the service is already absent. It does not delete the project, `.env`,
+Telegram session, SQLite state, or log files.
 
 ## Security and Telegram rules
 

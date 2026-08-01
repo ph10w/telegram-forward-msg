@@ -3,15 +3,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
+import re
 import sys
-from pathlib import Path
+from datetime import timedelta
 
-from dotenv import load_dotenv
-
-from .app import list_dialogs, run_forwarder
+from .bootstrap import list_available_chats, reset_forwarder, run_monitoring
 from .config import BaseConfig, ConfigError, ForwarderConfig
-from .state import StateStore
+from .errors import TelegramServiceError
+
+RESET_PERIOD_PATTERN = re.compile(r"^(?P<amount>[1-9]\d*)(?P<unit>[HDW])$", re.IGNORECASE)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,14 +22,40 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("run", "list-chats", "reset"),
         default="run",
         help=(
-            "Monitoring starten, Chat-IDs anzeigen oder Scan-Zustand zurücksetzen "
+            "Monitoring starten, Chat-IDs anzeigen oder Scan-Zustand vollständig "
+            "beziehungsweise zeitlich begrenzt zurücksetzen, z. B. reset=1W "
             "(Standard: run)."
         ),
     )
     return parser
+
+
+def parse_command(value: str) -> tuple[str, timedelta | None]:
+    if value in {"run", "list-chats"}:
+        return value, None
+    if value == "reset":
+        return value, None
+    if value.lower().startswith("reset="):
+        raw_period = value.partition("=")[2]
+        match = RESET_PERIOD_PATTERN.fullmatch(raw_period)
+        if not match:
+            raise ConfigError(
+                "Reset-Zeitraum muss eine positive ganze Zahl mit H, D oder W sein, "
+                "z. B. reset=24H, reset=7D oder reset=1W."
+            )
+        amount = int(match.group("amount"))
+        unit = match.group("unit").upper()
+        try:
+            if unit == "H":
+                return "reset", timedelta(hours=amount)
+            if unit == "D":
+                return "reset", timedelta(days=amount)
+            return "reset", timedelta(weeks=amount)
+        except OverflowError as exc:
+            raise ConfigError("Reset-Zeitraum ist zu groß.") from exc
+    raise ConfigError(f"Unbekannter Befehl: {value}")
 
 
 def _configure_logging(level: str) -> None:
@@ -42,37 +68,57 @@ def _configure_logging(level: str) -> None:
     )
 
 
-def reset_scan_state() -> tuple[Path, int, int]:
-    load_dotenv()
-    state_db = Path(os.getenv("STATE_DB", "data/forwarder.sqlite3"))
-    state = StateStore(state_db)
-    try:
-        cursor_count, message_count = state.reset()
-    finally:
-        state.close()
-    return state_db, cursor_count, message_count
-
-
 def main() -> None:
     args = _parser().parse_args()
     try:
-        if args.command == "reset":
-            state_db, cursor_count, message_count = reset_scan_state()
+        command, reset_period = parse_command(args.command)
+        if command == "reset":
+            config = ForwarderConfig.from_env()
+            _configure_logging(config.log_level)
+            result = asyncio.run(reset_forwarder(config, reset_period))
+            if result.cutoff is None:
+                print(
+                    f"Scan-Zustand zurückgesetzt ({result.state_db}): "
+                    f"{result.cursor_count} Cursor und "
+                    f"{result.history_count} bekannte Nachrichten gelöscht."
+                )
+            else:
+                print(
+                    f"Scan-Zustand seit "
+                    f"{result.cutoff.astimezone():%Y-%m-%d %H:%M:%S %Z} "
+                    f"zurückgesetzt ({result.state_db}): "
+                    f"{result.cursor_count} Cursor zurückgesetzt und "
+                    f"{result.history_count} bekannte Nachrichten gelöscht."
+                )
             print(
-                f"Scan-Zustand zurückgesetzt ({state_db}): "
-                f"{cursor_count} Cursor und {message_count} bekannte Nachrichten gelöscht."
+                f"{result.deleted_target_count} zugehörige Nachricht(en) "
+                f"im Zielchat gelöscht."
             )
-        elif args.command == "list-chats":
+            if result.unavailable_target_count:
+                print(
+                    f"WARNUNG: {result.unavailable_target_count} ältere oder einem "
+                    f"anderen Zielchat zugeordnete Nachricht(en) konnten nicht "
+                    f"automatisch gelöscht werden.",
+                    file=sys.stderr,
+                )
+        elif command == "list-chats":
             config = BaseConfig.from_env()
             _configure_logging(config.log_level)
-            asyncio.run(list_dialogs(config))
+            dialogs = asyncio.run(list_available_chats(config))
+            print(f"{'ID':>16}  {'Typ':<10}  Name")
+            print(f"{'-' * 16}  {'-' * 10}  {'-' * 40}")
+            for dialog in dialogs:
+                print(f"{dialog.id:>16}  {dialog.kind:<10}  {dialog.name}")
         else:
             config = ForwarderConfig.from_env()
             _configure_logging(config.log_level)
-            asyncio.run(run_forwarder(config))
+            asyncio.run(run_monitoring(config))
     except (ConfigError, ValueError) as exc:
         print(f"Konfigurationsfehler: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+    except TelegramServiceError as exc:
+        print(f"Telegram-Fehler: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     except KeyboardInterrupt:
         print("Monitoring beendet.")
 

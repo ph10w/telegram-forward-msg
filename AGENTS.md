@@ -15,13 +15,26 @@ downloads or uploads.
 ## Repository layout
 
 - `src/telegram_voice_forwarder/app.py`: Telegram client, message filtering,
-  caption construction, catch-up scanning, and live event handling
+  caption construction, application orchestration, catch-up scanning, and live
+  event handling
+- `src/telegram_voice_forwarder/core.py`: pure collection-block policy and
+  reset planning and domain decisions without Telegram or SQLite dependencies
+- `src/telegram_voice_forwarder/models.py`: neutral persisted/domain value
+  objects shared across ports, policies, and adapters
+- `src/telegram_voice_forwarder/ports.py`: repository protocols used by the
+  application and reset services
 - `src/telegram_voice_forwarder/config.py`: environment configuration and
   validation
-- `src/telegram_voice_forwarder/state.py`: SQLite cursors, deduplication, and
-  retry state
-- `src/telegram_voice_forwarder/cli.py`: `run`, `list-chats`, and `reset`
-  commands
+- `src/telegram_voice_forwarder/state.py`: SQLite schema, migrations, mapping,
+  queries, and atomic application of explicit state-transition/reset plans
+- `src/telegram_voice_forwarder/reset_service.py`: reset workflow coordinating
+  injected Telegram and persistent-state ports
+- `src/telegram_voice_forwarder/telegram_adapter.py`: Telethon client creation,
+  dialog access, and reset-gateway implementation
+- `src/telegram_voice_forwarder/bootstrap.py`: composition root; the only place
+  where use cases and concrete adapters are wired together
+- `src/telegram_voice_forwarder/cli.py`: argument parsing, command dispatch, and
+  user-facing command output
 - `tests/`: unit tests for configuration, message processing, captions, and
   persistent state
 - `.env.example`: documented configuration without real credentials
@@ -44,14 +57,32 @@ python -m unittest discover -s tests -v
 
 ## Behavioral requirements
 
-- Treat `MIN_VOICE_DURATION_SECONDS` as an inclusive threshold: shorter voice
-  messages are ignored; messages exactly at the threshold are accepted.
+- Treat `MIN_VOICE_DURATION_SECONDS` as an inclusive threshold for the first
+  voice message in a collection block. Once a block is open, subsequent voice
+  messages from the same author bypass the minimum-duration filter.
+- Keep collection blocks per source chat. A voice message from another author
+  closes the active block regardless of duration. Non-voice messages close it
+  only after five consecutive occurrences; a joining voice message resets that
+  count. Four hours without an accepted voice message also closes the block;
+  use Telegram's message timestamps so catch-up scans behave like live traffic.
+- Persist collection headers, counts, and active/closed state in `StateStore`
+  so blocks continue consistently after a restart.
 - `INITIAL_SCAN_LIMIT` only controls the first scan after the cursor has been
   reset.
 - The `reset` command removes both scan cursors and known-message history so
-  eligible messages can be processed again.
-- Preserve the original text, author, local timestamp, and clickable source
-  link in the copied voice-message caption.
+  eligible messages can be processed again. It deletes safely tracked messages
+  from the currently configured target before changing local state; if a
+  Telegram deletion fails, local state must remain intact.
+- A time-limited reset rewinds each configured source to the message before
+  cutoff and uses each job's persisted original `source_message_at` as its
+  primary inclusion criterion. If a block's `last_voice_at` is inside the reset
+  window, expand the reset to include the complete block and its target header.
+  Rows created by older versions without timestamps use the Telegram-derived
+  message-ID boundary as a fallback. A reset must never advance an older cursor,
+  and the subsequent catch-up must not be limited by `INITIAL_SCAN_LIMIT`.
+- Put the author and editable voice-message count in the collection header.
+  Preserve the original text in each copied voice-message caption and use its
+  local timestamp as the clickable source-link label.
 - Preserve Telegram UTF-16 entity offsets when changing captions.
 - Private supergroup links use `https://t.me/c/<internal-id>/<message-id>` and
   only work for users who belong to the source group.
@@ -76,6 +107,16 @@ python -m unittest discover -s tests -v
 ## Change guidelines
 
 - Keep the asynchronous event loop non-blocking.
+- Keep business rules in `core.py` independent of Telethon, SQLite, filesystem,
+  and environment access. Interface modules translate inputs and execute the
+  resulting decisions.
+- Preserve the directed dependency tree: `__main__ -> cli -> bootstrap -> use
+  cases/adapters -> core/ports/models`. Event processing follows `Telegram
+  update -> handler -> message processing -> core/ports`; lower layers never
+  call back into their callers. Use cases depend only on ports and must never
+  import concrete adapters. Do not introduce bidirectional module, class, or
+  call dependencies. Update `tests/test_architecture.py` intentionally when
+  adding a module or a permitted dependency edge.
 - Validate new environment values in `config.py`; document them in both
   `.env.example` and `README.md`.
 - Put durable processing state in `StateStore` and cover schema or state-machine

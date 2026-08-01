@@ -1,20 +1,24 @@
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from telethon import helpers
+
 from telegram_voice_forwarder.app import (
+    ResolvedSource,
     VoiceForwarder,
-    build_client,
     linked_caption,
     message_author,
     telegram_message_link,
 )
 from telegram_voice_forwarder.config import ForwarderConfig
+from telegram_voice_forwarder.core import ResetPolicy
 from telegram_voice_forwarder.state import StateStore
+from telegram_voice_forwarder.telegram_adapter import build_client
 
 
 def test_config(root: Path) -> ForwarderConfig:
@@ -40,16 +44,21 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         root = Path(self.temp_dir.name)
         self.state = StateStore(root / "state.sqlite3")
         self.client = SimpleNamespace(
-            forward_messages=AsyncMock(),
-            send_file=AsyncMock(),
+            forward_messages=AsyncMock(return_value=SimpleNamespace(id=902)),
+            send_file=AsyncMock(return_value=SimpleNamespace(id=901)),
+            send_message=AsyncMock(return_value=SimpleNamespace(id=900)),
+            edit_message=AsyncMock(),
         )
         self.forwarder = VoiceForwarder(self.client, test_config(root), self.state)
         self.forwarder.target = object()
+        self.forwarder.target_id = -1002
 
     def test_builds_client_with_configured_entity_cache_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = test_config(Path(temp_dir))
-            with patch("telegram_voice_forwarder.app.TelegramClient") as client_class:
+            with patch(
+                "telegram_voice_forwarder.telegram_adapter.TelegramClient"
+            ) as client_class:
                 build_client(config)
 
         self.assertEqual(client_class.call_args.kwargs["entity_cache_limit"], 500)
@@ -67,7 +76,9 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
             entities=[],
             date=datetime(2026, 7, 16, 12, 50, 32, tzinfo=timezone.utc),
             post_author=None,
+            sender_id=42,
             sender=SimpleNamespace(
+                id=42,
                 first_name="Alice",
                 last_name="Example",
                 username="alice",
@@ -82,15 +93,58 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args, (self.forwarder.target, voice.voice))
         self.assertEqual(
             kwargs["caption"],
-            "Originaltext\n\n👤 Autor: Alice Example (@alice)\n"
-            "🕒 Originaldatum: 16.07.2026 14:50:32\n"
-            "🔗 Ursprungsnachricht",
+            "Originaltext\n\n🕒 16.07.2026 14:50:32",
         )
         self.assertEqual(kwargs["formatting_entities"][-1].url, "https://t.me/c/1/11")
+        caption_with_surrogates = helpers.add_surrogate(kwargs["caption"])
+        date_entity = kwargs["formatting_entities"][-1]
+        self.assertEqual(
+            helpers.del_surrogate(
+                caption_with_surrogates[
+                    date_entity.offset : date_entity.offset + date_entity.length
+                ]
+            ),
+            "16.07.2026 14:50:32",
+        )
         self.assertTrue(kwargs["voice_note"])
+        self.client.send_message.assert_awaited_once_with(
+            self.forwarder.target,
+            "👤 Autor: Alice Example (@alice)\n🎙️ 1 Sprachnachricht",
+            parse_mode=None,
+        )
+        self.client.edit_message.assert_not_awaited()
         self.client.forward_messages.assert_not_awaited()
         self.assertTrue(self.state.is_complete(-1001, 11))
         self.assertEqual(self.state.cursor(-1001), 11)
+        reset_plan = ResetPolicy(-1002).create_plan(
+            self.state.load_reset_snapshot()
+        )
+        self.assertEqual(reset_plan.target_message_ids, (900, 901))
+        self.assertEqual(reset_plan.unavailable_target_count, 0)
+
+    async def test_catch_up_honors_an_explicit_zero_cursor(self) -> None:
+        message = SimpleNamespace(id=1)
+        iterator_arguments: dict[str, object] = {}
+
+        async def iter_messages(entity: object, **kwargs: object):
+            iterator_arguments["entity"] = entity
+            iterator_arguments.update(kwargs)
+            yield message
+
+        source_entity = object()
+        self.state.advance_cursor(-1001, 0)
+        self.forwarder.sources[-1001] = ResolvedSource(-1001, source_entity, "Source")
+        self.client.iter_messages = iter_messages
+        self.forwarder.process_message = AsyncMock()
+        self.forwarder._initial_scan = AsyncMock()
+
+        await self.forwarder.catch_up()
+
+        self.forwarder._initial_scan.assert_not_awaited()
+        self.forwarder.process_message.assert_awaited_once_with(-1001, message)
+        self.assertIs(iterator_arguments["entity"], source_entity)
+        self.assertEqual(iterator_arguments["min_id"], 0)
+        self.assertTrue(iterator_arguments["reverse"])
 
     async def test_skips_non_voice_message(self) -> None:
         text = SimpleNamespace(id=12, voice=None, video_note=None)
@@ -106,6 +160,7 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         config = replace(test_config(root), min_voice_duration_seconds=3.0)
         forwarder = VoiceForwarder(self.client, config, self.state)
         forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
         short_voice = SimpleNamespace(
             id=13,
             voice=object(),
@@ -125,6 +180,7 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         config = replace(test_config(root), min_voice_duration_seconds=3.0)
         forwarder = VoiceForwarder(self.client, config, self.state)
         forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
         voice = SimpleNamespace(
             id=14,
             voice=object(),
@@ -152,7 +208,7 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         caption, entities = linked_caption(message, "https://t.me/c/1/2")
 
         self.assertLessEqual(len(caption), 1024)
-        self.assertTrue(caption.endswith("🔗 Ursprungsnachricht"))
+        self.assertTrue(caption.endswith("🕒 Ursprungsnachricht"))
         self.assertEqual(entities[-1].url, "https://t.me/c/1/2")
 
     def test_linked_caption_contains_original_date(self) -> None:
@@ -164,7 +220,234 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
             original_date="16.07.2026 14:50:32",
         )
 
-        self.assertIn("🕒 Originaldatum: 16.07.2026 14:50:32", caption)
+        self.assertIn("🕒 16.07.2026 14:50:32", caption)
+
+    async def test_same_author_extends_block_below_minimum_and_edits_count(self) -> None:
+        root = Path(self.temp_dir.name)
+        config = replace(test_config(root), min_voice_duration_seconds=10.0)
+        forwarder = VoiceForwarder(self.client, config, self.state)
+        forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
+        sender = SimpleNamespace(
+            id=42,
+            first_name="Alice",
+            last_name=None,
+            username=None,
+        )
+        first = SimpleNamespace(
+            id=20,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=10.0),
+            raw_text="",
+            entities=[],
+            date=None,
+            post_author=None,
+            sender_id=42,
+            sender=sender,
+        )
+        short_follow_up = SimpleNamespace(
+            id=21,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=1.0),
+            raw_text="",
+            entities=[],
+            date=None,
+            post_author=None,
+            sender_id=42,
+            sender=sender,
+        )
+
+        await forwarder.process_message(-1001, first)
+        await forwarder.process_message(-1001, short_follow_up)
+
+        self.assertEqual(self.client.send_file.await_count, 2)
+        self.client.send_message.assert_awaited_once()
+        self.client.edit_message.assert_awaited_once_with(
+            forwarder.target,
+            900,
+            "👤 Autor: Alice\n🎙️ 2 Sprachnachrichten",
+            parse_mode=None,
+        )
+        block = self.state.active_voice_block(-1001)
+        self.assertIsNotNone(block)
+        self.assertEqual(block.voice_count, 2)
+
+    async def test_short_voice_from_other_author_closes_block(self) -> None:
+        root = Path(self.temp_dir.name)
+        config = replace(test_config(root), min_voice_duration_seconds=10.0)
+        forwarder = VoiceForwarder(self.client, config, self.state)
+        forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
+
+        def voice(message_id: int, sender_id: int, duration: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                voice=object(),
+                video_note=None,
+                file=SimpleNamespace(duration=duration),
+                raw_text="",
+                entities=[],
+                date=None,
+                post_author=None,
+                sender_id=sender_id,
+                sender=SimpleNamespace(
+                    id=sender_id,
+                    first_name=f"User {sender_id}",
+                    last_name=None,
+                    username=None,
+                ),
+            )
+
+        await forwarder.process_message(-1001, voice(30, 1, 10.0))
+        await forwarder.process_message(-1001, voice(31, 2, 1.0))
+        await forwarder.process_message(-1001, voice(32, 1, 1.0))
+
+        self.assertEqual(self.client.send_file.await_count, 1)
+        self.assertTrue(self.state.is_complete(-1001, 31))
+        self.assertTrue(self.state.is_complete(-1001, 32))
+        self.assertIsNone(self.state.active_voice_block(-1001))
+
+    async def test_eligible_voice_from_other_author_starts_new_block(self) -> None:
+        self.client.send_message.side_effect = (
+            SimpleNamespace(id=900),
+            SimpleNamespace(id=903),
+        )
+
+        def voice(message_id: int, sender_id: int) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                voice=object(),
+                video_note=None,
+                file=SimpleNamespace(duration=10.0),
+                raw_text="",
+                entities=[],
+                date=None,
+                post_author=None,
+                sender_id=sender_id,
+                sender=SimpleNamespace(
+                    id=sender_id,
+                    first_name=f"User {sender_id}",
+                    last_name=None,
+                    username=None,
+                ),
+            )
+
+        await self.forwarder.process_message(-1001, voice(35, 1))
+        await self.forwarder.process_message(-1001, voice(36, 2))
+
+        self.assertEqual(self.client.send_message.await_count, 2)
+        self.assertEqual(self.client.send_file.await_count, 2)
+        block = self.state.active_voice_block(-1001)
+        self.assertIsNotNone(block)
+        self.assertEqual(block.author_key, "sender:2")
+        self.assertEqual(block.header_message_id, 903)
+        self.assertEqual(block.voice_count, 1)
+
+    async def test_five_non_voice_messages_close_block(self) -> None:
+        sender = SimpleNamespace(
+            id=42,
+            first_name="Alice",
+            last_name=None,
+            username=None,
+        )
+
+        def voice(message_id: int) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                voice=object(),
+                video_note=None,
+                file=SimpleNamespace(duration=1.0),
+                raw_text="",
+                entities=[],
+                date=None,
+                post_author=None,
+                sender_id=42,
+                sender=sender,
+            )
+
+        await self.forwarder.process_message(-1001, voice(40))
+        for message_id in range(41, 45):
+            await self.forwarder.process_message(
+                -1001, SimpleNamespace(id=message_id, voice=None, video_note=None)
+            )
+        await self.forwarder.process_message(-1001, voice(45))
+        self.assertEqual(self.client.send_message.await_count, 1)
+
+        for message_id in range(46, 51):
+            await self.forwarder.process_message(
+                -1001, SimpleNamespace(id=message_id, voice=None, video_note=None)
+            )
+        self.client.send_message.return_value = SimpleNamespace(id=903)
+        await self.forwarder.process_message(-1001, voice(51))
+
+        self.assertEqual(self.client.send_message.await_count, 2)
+        self.assertEqual(self.client.send_file.await_count, 3)
+        self.assertEqual(self.state.active_voice_block(-1001).first_message_id, 51)
+
+    async def test_four_hours_since_last_voice_close_block(self) -> None:
+        root = Path(self.temp_dir.name)
+        config = replace(test_config(root), min_voice_duration_seconds=10.0)
+        forwarder = VoiceForwarder(self.client, config, self.state)
+        forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
+        self.client.send_message.side_effect = (
+            SimpleNamespace(id=900),
+            SimpleNamespace(id=903),
+        )
+        sender = SimpleNamespace(
+            id=42,
+            first_name="Alice",
+            last_name=None,
+            username=None,
+        )
+
+        def voice(
+            message_id: int, date: datetime, duration: float
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=message_id,
+                voice=object(),
+                video_note=None,
+                file=SimpleNamespace(duration=duration),
+                raw_text="",
+                entities=[],
+                date=date,
+                post_author=None,
+                sender_id=42,
+                sender=sender,
+            )
+
+        first_at = datetime(2026, 8, 1, 8, tzinfo=timezone.utc)
+        follow_up_at = first_at + timedelta(hours=3, minutes=59)
+        block_age_four_hours = first_at + timedelta(hours=4)
+        timeout_at = block_age_four_hours + timedelta(hours=4)
+
+        await forwarder.process_message(-1001, voice(60, first_at, 10.0))
+        await forwarder.process_message(-1001, voice(61, follow_up_at, 1.0))
+        await forwarder.process_message(-1001, voice(62, block_age_four_hours, 1.0))
+        await forwarder.process_message(-1001, voice(63, timeout_at, 10.0))
+
+        self.assertEqual(self.client.send_file.await_count, 4)
+        self.assertEqual(self.client.send_message.await_count, 2)
+        self.assertEqual(self.client.edit_message.await_count, 2)
+        self.assertEqual(
+            self.client.edit_message.await_args_list[-1].args,
+            (
+                forwarder.target,
+                900,
+                "👤 Autor: Alice\n🎙️ 3 Sprachnachrichten",
+            ),
+        )
+        self.assertEqual(
+            self.client.edit_message.await_args_list[-1].kwargs,
+            {"parse_mode": None},
+        )
+        active = self.state.active_voice_block(-1001)
+        self.assertIsNotNone(active)
+        self.assertEqual(active.first_message_id, 63)
+        self.assertEqual(active.header_message_id, 903)
 
     async def test_uses_anonymous_admin_signature_as_author(self) -> None:
         message = SimpleNamespace(post_author="Redaktion", sender=None)
