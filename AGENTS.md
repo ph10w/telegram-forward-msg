@@ -14,9 +14,9 @@ downloads or uploads.
 
 ## Repository layout
 
-- `src/telegram_voice_forwarder/app.py`: Telegram client, message filtering,
-  caption construction, application orchestration, catch-up scanning, and live
-  event handling
+- `src/telegram_voice_forwarder/app.py`: message filtering, caption
+  construction, application orchestration, catch-up scanning, and live event
+  handling through an injected Telegram client
 - `src/telegram_voice_forwarder/core.py`: pure collection-block policy and
   reset planning and domain decisions without Telegram or SQLite dependencies
 - `src/telegram_voice_forwarder/models.py`: neutral persisted/domain value
@@ -38,6 +38,31 @@ downloads or uploads.
 - `tests/`: unit tests for configuration, message processing, captions, and
   persistent state
 - `.env.example`: documented configuration without real credentials
+
+## Design decisions
+
+- Keep domain models and decisions in `models.py` and `core.py`. They must stay
+  deterministic and independent of Telethon, SQLite, files, environment
+  variables, and the event loop.
+- Keep all dependency and call directions one-way: `__main__ -> cli ->
+  bootstrap -> use cases/adapters -> core/ports/models`. Telegram events enter
+  through a handler and flow toward message processing, policies, and ports;
+  lower layers never call back into their callers.
+- Treat `bootstrap.py` as the composition root and the only place that creates
+  and connects concrete adapters. Use cases receive dependencies through the
+  protocols in `ports.py`.
+- Keep persistence policy-free. `state.py` loads neutral snapshots and applies
+  explicit state-transition or reset plans atomically; it must not decide which
+  messages or blocks a workflow affects.
+- Build reset decisions from persisted original Telegram timestamps. A reset
+  expands to complete collection blocks, deletes safely tracked remote messages
+  before local history, and leaves local state unchanged if remote deletion
+  fails.
+- Copy voice notes through Telegram's existing server-side media reference so
+  captions can be added without downloading or uploading the audio. Respect
+  Telegram content protection and caption/entity constraints.
+- Enforce these boundaries with `tests/test_architecture.py`, including allowed
+  imports and the absence of import, local-function, and class-method cycles.
 
 ## Development setup
 
@@ -107,16 +132,8 @@ python -m unittest discover -s tests -v
 ## Change guidelines
 
 - Keep the asynchronous event loop non-blocking.
-- Keep business rules in `core.py` independent of Telethon, SQLite, filesystem,
-  and environment access. Interface modules translate inputs and execute the
-  resulting decisions.
-- Preserve the directed dependency tree: `__main__ -> cli -> bootstrap -> use
-  cases/adapters -> core/ports/models`. Event processing follows `Telegram
-  update -> handler -> message processing -> core/ports`; lower layers never
-  call back into their callers. Use cases depend only on ports and must never
-  import concrete adapters. Do not introduce bidirectional module, class, or
-  call dependencies. Update `tests/test_architecture.py` intentionally when
-  adding a module or a permitted dependency edge.
+- Preserve the design boundaries above. Update `tests/test_architecture.py`
+  intentionally when adding a module or a permitted dependency edge.
 - Validate new environment values in `config.py`; document them in both
   `.env.example` and `README.md`.
 - Put durable processing state in `StateStore` and cover schema or state-machine
