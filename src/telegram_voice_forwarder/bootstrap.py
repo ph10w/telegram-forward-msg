@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 import logging
 from datetime import timedelta
 
 from telethon.errors import RPCError
 
 from .app import VoiceForwarder
-from .config import BaseConfig, ForwarderConfig
+from .config import BaseConfig, ChatRef, ForwarderConfig
 from .errors import TelegramServiceError
 from .models import DialogInfo
 from .reset_service import ResetResult, reset_scan_state
@@ -50,6 +48,7 @@ async def list_available_chats(config: BaseConfig) -> tuple[DialogInfo, ...]:
 async def reset_forwarder(
     config: ForwarderConfig,
     period: timedelta | None,
+    source_chat: ChatRef | None = None,
 ) -> ResetResult:
     client = build_client(config)
     gateway = TelethonResetGateway(client, config)
@@ -58,6 +57,7 @@ async def reset_forwarder(
         return await reset_scan_state(
             config,
             period,
+            source_chat=source_chat,
             telegram=gateway,
             state=state,
         )

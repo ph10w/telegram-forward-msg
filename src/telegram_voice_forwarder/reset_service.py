@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .config import ForwarderConfig
+from .config import ChatRef, ForwarderConfig
 from .core import ResetPolicy
 from .ports import ResetStateRepository, ResetTelegramGateway
 
@@ -23,6 +21,7 @@ async def reset_scan_state(
     config: ForwarderConfig,
     period: timedelta | None = None,
     *,
+    source_chat: ChatRef | None = None,
     telegram: ResetTelegramGateway,
     state: ResetStateRepository,
     now: datetime | None = None,
@@ -33,18 +32,27 @@ async def reset_scan_state(
         target_chat_id = await telegram.resolve_target(config.target_chat)
 
         boundaries: dict[int, int] | None = None
+        source_ids: frozenset[int] | None = None
         if cutoff is not None:
             boundaries = {}
-            for reference in config.source_chats:
+            references = (
+                (source_chat,) if source_chat is not None else config.source_chats
+            )
+            for reference in references:
                 source_id, boundary = await telegram.boundary_before(
                     reference, cutoff
                 )
                 boundaries[source_id] = boundary
+            if source_chat is not None:
+                source_ids = frozenset(boundaries)
+        elif source_chat is not None:
+            source_ids = frozenset((await telegram.resolve_source(source_chat),))
 
         plan = ResetPolicy(target_chat_id).create_plan(
             state.load_reset_snapshot(),
             boundaries,
             cutoff=cutoff,
+            source_ids=source_ids,
         )
         await telegram.delete_target_messages(plan.target_message_ids)
 

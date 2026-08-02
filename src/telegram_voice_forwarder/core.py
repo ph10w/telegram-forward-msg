@@ -1,10 +1,18 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import Enum, auto
+from enum import Enum, StrEnum, auto
 
 from .models import ForwardingJob, JobStatus, MessageKey, VoiceBlock
+
+
+class SourceKind(StrEnum):
+    GROUP = "group"
+    SUPERGROUP = "supergroup"
+    CHANNEL = "channel"
+
+    @property
+    def allows_blocks(self) -> bool:
+        return self in {SourceKind.GROUP, SourceKind.SUPERGROUP}
 
 
 class MessageAction(Enum):
@@ -14,11 +22,14 @@ class MessageAction(Enum):
     IGNORE_SHORT_VOICE = auto()
     START_BLOCK = auto()
     JOIN_BLOCK = auto()
+    FORWARD_STANDALONE = auto()
 
 
 class BlockCloseReason(Enum):
     TIMEOUT = auto()
     DIFFERENT_AUTHOR_OR_TARGET = auto()
+    FORWARDED_MESSAGE = auto()
+    BLOCKS_DISABLED = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +46,8 @@ class MessageFacts:
     observed_at: datetime
     duration_seconds: float | None = None
     author_key: str | None = None
+    is_forwarded: bool = False
+    allows_blocks: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +76,39 @@ class BlockPolicy:
             close_reason = BlockCloseReason.TIMEOUT
             active = None
 
+        if not message.allows_blocks:
+            if active is not None:
+                close_reason = BlockCloseReason.BLOCKS_DISABLED
+                active = None
+            if not message.is_voice:
+                return BlockDecision(MessageAction.SKIP_NON_VOICE, close_reason)
+            duration = message.duration_seconds
+            if (
+                self.minimum_voice_duration_seconds > 0
+                and duration is not None
+                and duration < self.minimum_voice_duration_seconds
+            ):
+                return BlockDecision(MessageAction.IGNORE_SHORT_VOICE, close_reason)
+            return BlockDecision(MessageAction.FORWARD_STANDALONE, close_reason)
+
         if not message.is_voice:
             if active is None:
                 return BlockDecision(MessageAction.SKIP_NON_VOICE, close_reason)
             if active.non_voice_count + 1 >= self.maximum_non_voice_gap:
                 return BlockDecision(MessageAction.CLOSE_ON_NON_VOICE, close_reason)
             return BlockDecision(MessageAction.RECORD_NON_VOICE, close_reason)
+
+        if message.is_forwarded:
+            if active is not None:
+                close_reason = BlockCloseReason.FORWARDED_MESSAGE
+            duration = message.duration_seconds
+            if (
+                self.minimum_voice_duration_seconds > 0
+                and duration is not None
+                and duration < self.minimum_voice_duration_seconds
+            ):
+                return BlockDecision(MessageAction.IGNORE_SHORT_VOICE, close_reason)
+            return BlockDecision(MessageAction.FORWARD_STANDALONE, close_reason)
 
         if message.author_key is None:
             raise ValueError("Voice-message facts require an author key.")
@@ -102,6 +142,7 @@ class ResetSnapshot:
 @dataclass(frozen=True, slots=True)
 class ResetPlan:
     clear_all: bool
+    clear_cursor_source_ids: tuple[int, ...]
     cursor_boundaries: tuple[tuple[int, int], ...]
     jobs: tuple[MessageKey, ...]
     block_ids: tuple[int, ...]
@@ -119,12 +160,24 @@ class ResetPolicy:
         boundaries: dict[int, int] | None = None,
         *,
         cutoff: datetime | None = None,
+        source_ids: frozenset[int] | None = None,
     ) -> ResetPlan:
-        if boundaries is None:
+        if boundaries is None and source_ids is None:
             affected_jobs = snapshot.jobs
             affected_blocks = snapshot.blocks
             expanded_boundaries: dict[int, int] = {}
             clear_all = True
+            clear_cursor_source_ids: tuple[int, ...] = ()
+        elif boundaries is None:
+            affected_jobs = tuple(
+                job for job in snapshot.jobs if job.source_id in source_ids
+            )
+            affected_blocks = tuple(
+                block for block in snapshot.blocks if block.source_id in source_ids
+            )
+            expanded_boundaries = {}
+            clear_all = False
+            clear_cursor_source_ids = tuple(sorted(source_ids))
         else:
             affected_blocks = self._affected_blocks(
                 snapshot.blocks, boundaries, cutoff
@@ -143,7 +196,13 @@ class ResetPolicy:
                     cutoff,
                 )
             )
+            affected_jobs = self._include_origin_aliases(
+                snapshot.jobs,
+                affected_jobs,
+                source_ids,
+            )
             clear_all = False
+            clear_cursor_source_ids = ()
 
         affected_jobs = tuple(
             sorted(affected_jobs, key=lambda job: (job.source_id, job.message_id))
@@ -170,6 +229,7 @@ class ResetPolicy:
 
         return ResetPlan(
             clear_all=clear_all,
+            clear_cursor_source_ids=clear_cursor_source_ids,
             cursor_boundaries=tuple(sorted(expanded_boundaries.items())),
             jobs=tuple(
                 MessageKey(job.source_id, job.message_id)
@@ -229,3 +289,37 @@ class ResetPolicy:
         if job.source_message_at is not None:
             return job.source_message_at >= cutoff
         return job.message_id > boundary
+
+    @staticmethod
+    def _include_origin_aliases(
+        all_jobs: tuple[ForwardingJob, ...],
+        affected_jobs: tuple[ForwardingJob, ...],
+        source_ids: frozenset[int] | None,
+    ) -> tuple[ForwardingJob, ...]:
+        affected_origins = {
+            (job.origin_chat_id, job.origin_message_id, job.target_chat_id)
+            for job in affected_jobs
+            if job.origin_chat_id is not None
+            and job.origin_message_id is not None
+            and job.target_chat_id is not None
+        }
+        if not affected_origins:
+            return affected_jobs
+        affected_keys = {
+            (job.source_id, job.message_id) for job in affected_jobs
+        }
+        return (
+            *affected_jobs,
+            *(
+                job
+                for job in all_jobs
+                if (job.source_id, job.message_id) not in affected_keys
+                and (source_ids is None or job.source_id in source_ids)
+                and (
+                    job.origin_chat_id,
+                    job.origin_message_id,
+                    job.target_chat_id,
+                )
+                in affected_origins
+            ),
+        )

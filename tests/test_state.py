@@ -23,9 +23,13 @@ class StateStoreTests(unittest.TestCase):
         *,
         cutoff: datetime | None = None,
         target_chat_id: int = -1009,
+        source_ids: frozenset[int] | None = None,
     ) -> ResetPlan:
         return ResetPolicy(target_chat_id).create_plan(
-            self.store.load_reset_snapshot(), boundaries, cutoff=cutoff
+            self.store.load_reset_snapshot(),
+            boundaries,
+            cutoff=cutoff,
+            source_ids=source_ids,
         )
 
     def test_cursor_only_moves_forward(self) -> None:
@@ -45,6 +49,29 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(self.store.pending_jobs(), [])
         self.assertEqual(self.store.cursor(-1001), 7)
 
+    def test_forwarded_origin_is_deduplicated_per_target_chat(self) -> None:
+        self.store.mark_pending(
+            -1001,
+            7,
+            origin_chat_id=-100777,
+            origin_message_id=123,
+        )
+        self.store.mark_forwarded(
+            -1001,
+            7,
+            target_chat_id=-1009,
+            target_message_id=101,
+            origin_chat_id=-100777,
+            origin_message_id=123,
+        )
+
+        self.assertTrue(
+            self.store.has_forwarded_origin(-100777, 123, -1009)
+        )
+        self.assertFalse(
+            self.store.has_forwarded_origin(-100777, 123, -1008)
+        )
+
     def test_reset_removes_cursors_and_forwarding_history(self) -> None:
         self.store.mark_pending(-1001, 7)
         self.store.mark_forwarded(-1001, 7)
@@ -56,6 +83,21 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(self.store.cursor(-1001), 0)
         self.assertFalse(self.store.has_cursor(-1001))
         self.assertFalse(self.store.is_complete(-1001, 7))
+
+    def test_full_reset_can_be_limited_to_one_source(self) -> None:
+        for source_id, message_id in ((-1001, 7), (-1002, 8)):
+            self.store.mark_pending(source_id, message_id)
+            self.store.mark_forwarded(source_id, message_id)
+
+        plan = self.reset_plan(source_ids=frozenset((-1001,)))
+        cursor_count, message_count = self.store.apply_reset_plan(plan)
+
+        self.assertEqual(cursor_count, 1)
+        self.assertEqual(message_count, 1)
+        self.assertFalse(self.store.has_cursor(-1001))
+        self.assertFalse(self.store.is_complete(-1001, 7))
+        self.assertTrue(self.store.has_cursor(-1002))
+        self.assertTrue(self.store.is_complete(-1002, 8))
 
     def test_rewind_removes_only_jobs_after_each_boundary(self) -> None:
         for message_id in (5, 10, 15):
@@ -269,6 +311,10 @@ class StateStoreTests(unittest.TestCase):
         self.assertIn("target_message_id", columns)
         self.assertIn("block_id", columns)
         self.assertIn("source_message_at", columns)
+        self.assertIn("author_key", columns)
+        self.assertIn("author_label", columns)
+        self.assertIn("origin_chat_id", columns)
+        self.assertIn("origin_message_id", columns)
         self.assertIn("last_voice_at", block_columns)
         self.assertEqual(last_voice_at, "2026-08-01T08:00:00+00:00")
 

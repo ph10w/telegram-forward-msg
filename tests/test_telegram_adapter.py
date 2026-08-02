@@ -121,6 +121,7 @@ class TelegramAdapterTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             current = config(Path(temp_dir))
             target = SimpleNamespace(id=3)
+            selected_source = SimpleNamespace(id=2)
             source = SimpleNamespace(id=1)
             client = SimpleNamespace(
                 start=AsyncMock(),
@@ -128,7 +129,7 @@ class TelegramAdapterTests(unittest.IsolatedAsyncioTestCase):
                     return_value=SimpleNamespace(id=42, first_name="Alice")
                 ),
                 get_dialogs=AsyncMock(),
-                get_entity=AsyncMock(side_effect=(target, source)),
+                get_entity=AsyncMock(side_effect=(target, selected_source, source)),
                 get_messages=AsyncMock(return_value=[SimpleNamespace(id=17)]),
                 delete_messages=AsyncMock(),
                 disconnect=AsyncMock(),
@@ -138,15 +139,17 @@ class TelegramAdapterTests(unittest.IsolatedAsyncioTestCase):
 
             with patch(
                 "telegram_voice_forwarder.telegram_adapter.utils.get_peer_id",
-                side_effect=(-1003, -1001),
+                side_effect=(-1003, -1002, -1001),
             ):
                 await gateway.start()
                 target_id = await gateway.resolve_target("@target")
+                selected_source_id = await gateway.resolve_source("@selected")
                 boundary = await gateway.boundary_before("@source", cutoff)
                 await gateway.delete_target_messages(tuple(range(1, 102)))
                 await gateway.close()
 
             self.assertEqual(target_id, -1003)
+            self.assertEqual(selected_source_id, -1002)
             self.assertEqual(boundary, (-1001, 17))
             client.get_dialogs.assert_awaited_once_with()
             client.get_messages.assert_awaited_once_with(

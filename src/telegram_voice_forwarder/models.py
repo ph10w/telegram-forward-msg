@@ -1,11 +1,9 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     PENDING = "pending"
     FAILED = "failed"
     FORWARDED = "forwarded"
@@ -35,6 +33,10 @@ class ForwardingJob:
     target_message_id: int | None
     block_id: int | None
     source_message_at: datetime | None
+    author_key: str | None = None
+    author_label: str | None = None
+    origin_chat_id: int | None = None
+    origin_message_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

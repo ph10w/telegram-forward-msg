@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +47,10 @@ class StateStore:
                 target_message_id INTEGER,
                 block_id INTEGER,
                 source_message_at TEXT,
+                author_key TEXT,
+                author_label TEXT,
+                origin_chat_id INTEGER,
+                origin_message_id INTEGER,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (source_id, message_id)
             );
@@ -74,6 +76,30 @@ class StateStore:
             self._connection.execute(
                 "ALTER TABLE forwarding_jobs ADD COLUMN source_message_at TEXT"
             )
+        if "author_key" not in columns:
+            self._connection.execute(
+                "ALTER TABLE forwarding_jobs ADD COLUMN author_key TEXT"
+            )
+        if "author_label" not in columns:
+            self._connection.execute(
+                "ALTER TABLE forwarding_jobs ADD COLUMN author_label TEXT"
+            )
+        if "origin_chat_id" not in columns:
+            self._connection.execute(
+                "ALTER TABLE forwarding_jobs ADD COLUMN origin_chat_id INTEGER"
+            )
+        if "origin_message_id" not in columns:
+            self._connection.execute(
+                "ALTER TABLE forwarding_jobs ADD COLUMN origin_message_id INTEGER"
+            )
+        self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS forwarding_jobs_origin_idx
+            ON forwarding_jobs(
+                origin_chat_id, origin_message_id, target_chat_id, status
+            )
+            """
+        )
         block_columns = {
             str(row[1])
             for row in self._connection.execute("PRAGMA table_info(voice_blocks)")
@@ -131,7 +157,8 @@ class StateStore:
         job_rows = self._connection.execute(
             """
             SELECT source_id, message_id, status, target_chat_id,
-                   target_message_id, block_id, source_message_at
+                   target_message_id, block_id, source_message_at,
+                   author_key, author_label, origin_chat_id, origin_message_id
             FROM forwarding_jobs
             ORDER BY source_id, message_id
             """
@@ -165,6 +192,10 @@ class StateStore:
                         if row[6] is not None
                         else None
                     ),
+                    author_key=str(row[7]) if row[7] is not None else None,
+                    author_label=str(row[8]) if row[8] is not None else None,
+                    origin_chat_id=int(row[9]) if row[9] is not None else None,
+                    origin_message_id=int(row[10]) if row[10] is not None else None,
                 )
                 for row in job_rows
             ),
@@ -179,6 +210,12 @@ class StateStore:
                 self._connection.execute("DELETE FROM voice_blocks")
                 return cursor_result.rowcount, jobs_result.rowcount
 
+            cursors_deleted = 0
+            for source_id in plan.clear_cursor_source_ids:
+                result = self._connection.execute(
+                    "DELETE FROM cursors WHERE source_id = ?", (source_id,)
+                )
+                cursors_deleted += result.rowcount
             jobs_deleted = 0
             for key in plan.jobs:
                 result = self._connection.execute(
@@ -202,7 +239,7 @@ class StateStore:
                     """,
                     (source_id, boundary_id),
                 )
-        return len(plan.cursor_boundaries), jobs_deleted
+        return cursors_deleted + len(plan.cursor_boundaries), jobs_deleted
 
     @staticmethod
     def _voice_block(row: sqlite3.Row | tuple[object, ...] | None) -> VoiceBlock | None:
@@ -332,6 +369,24 @@ class StateStore:
         ).fetchone()
         return row is not None
 
+    def has_forwarded_origin(
+        self,
+        origin_chat_id: int,
+        origin_message_id: int,
+        target_chat_id: int,
+    ) -> bool:
+        row = self._connection.execute(
+            """
+            SELECT 1 FROM forwarding_jobs
+            WHERE origin_chat_id = ? AND origin_message_id = ?
+              AND target_chat_id = ?
+              AND status = 'forwarded'
+            LIMIT 1
+            """,
+            (origin_chat_id, origin_message_id, target_chat_id),
+        ).fetchone()
+        return row is not None
+
     def mark_pending(
         self,
         source_id: int,
@@ -339,6 +394,10 @@ class StateStore:
         *,
         block_id: int | None = None,
         message_at: datetime | None = None,
+        author_key: str | None = None,
+        author_label: str | None = None,
+        origin_chat_id: int | None = None,
+        origin_message_id: int | None = None,
     ) -> None:
         timestamp = self._timestamp(message_at) if message_at is not None else None
         with self._connection:
@@ -346,20 +405,44 @@ class StateStore:
                 """
                 INSERT INTO forwarding_jobs(
                     source_id, message_id, status, block_id,
-                    source_message_at, updated_at
+                    source_message_at, author_key, author_label,
+                    origin_chat_id, origin_message_id, updated_at
                 )
-                VALUES (?, ?, 'pending', ?, ?, ?)
+                VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id, message_id) DO UPDATE SET
                     status = 'pending',
-                    block_id = COALESCE(excluded.block_id, forwarding_jobs.block_id),
+                    block_id = excluded.block_id,
                     source_message_at = COALESCE(
                         excluded.source_message_at,
                         forwarding_jobs.source_message_at
                     ),
+                    author_key = COALESCE(
+                        excluded.author_key, forwarding_jobs.author_key
+                    ),
+                    author_label = COALESCE(
+                        excluded.author_label, forwarding_jobs.author_label
+                    ),
+                    origin_chat_id = COALESCE(
+                        excluded.origin_chat_id, forwarding_jobs.origin_chat_id
+                    ),
+                    origin_message_id = COALESCE(
+                        excluded.origin_message_id,
+                        forwarding_jobs.origin_message_id
+                    ),
                     updated_at = excluded.updated_at
                 WHERE forwarding_jobs.status NOT IN ('forwarded', 'ignored')
                 """,
-                (source_id, message_id, block_id, timestamp, self._now()),
+                (
+                    source_id,
+                    message_id,
+                    block_id,
+                    timestamp,
+                    author_key,
+                    author_label,
+                    origin_chat_id,
+                    origin_message_id,
+                    self._now(),
+                ),
             )
             if block_id is not None:
                 self._connection.execute(
@@ -381,6 +464,10 @@ class StateStore:
         target_message_id: int | None = None,
         block_id: int | None = None,
         message_at: datetime | None = None,
+        author_key: str | None = None,
+        author_label: str | None = None,
+        origin_chat_id: int | None = None,
+        origin_message_id: int | None = None,
     ) -> int | None:
         with self._connection:
             result = self._connection.execute(
@@ -388,8 +475,12 @@ class StateStore:
                 UPDATE forwarding_jobs
                 SET status = 'forwarded', attempts = attempts + 1,
                     last_error = NULL, target_chat_id = ?, target_message_id = ?,
-                    block_id = COALESCE(?, block_id),
+                    block_id = ?,
                     source_message_at = COALESCE(?, source_message_at),
+                    author_key = COALESCE(?, author_key),
+                    author_label = COALESCE(?, author_label),
+                    origin_chat_id = COALESCE(?, origin_chat_id),
+                    origin_message_id = COALESCE(?, origin_message_id),
                     updated_at = ?
                 WHERE source_id = ? AND message_id = ?
                   AND status NOT IN ('forwarded', 'ignored')
@@ -399,6 +490,10 @@ class StateStore:
                     target_message_id,
                     block_id,
                     self._timestamp(message_at) if message_at is not None else None,
+                    author_key,
+                    author_label,
+                    origin_chat_id,
+                    origin_message_id,
                     self._now(),
                     source_id,
                     message_id,
@@ -446,17 +541,37 @@ class StateStore:
         message_id: int,
         reason: str,
         *,
+        target_chat_id: int | None = None,
         message_at: datetime | None = None,
+        author_key: str | None = None,
+        author_label: str | None = None,
+        origin_chat_id: int | None = None,
+        origin_message_id: int | None = None,
     ) -> None:
-        self.mark_pending(source_id, message_id, message_at=message_at)
+        self.mark_pending(
+            source_id,
+            message_id,
+            message_at=message_at,
+            author_key=author_key,
+            author_label=author_label,
+            origin_chat_id=origin_chat_id,
+            origin_message_id=origin_message_id,
+        )
         with self._connection:
             self._connection.execute(
                 """
                 UPDATE forwarding_jobs
-                SET status = 'ignored', last_error = ?, updated_at = ?
+                SET status = 'ignored', last_error = ?,
+                    target_chat_id = COALESCE(?, target_chat_id), updated_at = ?
                 WHERE source_id = ? AND message_id = ?
                 """,
-                (reason[:1000], self._now(), source_id, message_id),
+                (
+                    reason[:1000],
+                    target_chat_id,
+                    self._now(),
+                    source_id,
+                    message_id,
+                ),
             )
             self._connection.execute(
                 """

@@ -53,6 +53,42 @@ class BlockPolicyTests(unittest.TestCase):
             MessageAction.IGNORE_SHORT_VOICE,
         )
 
+    def test_forwarded_voice_is_standalone_and_closes_active_block(self) -> None:
+        decision = self.policy.decide(
+            self.voice(is_forwarded=True),
+            self.active_block(),
+        )
+
+        self.assertEqual(decision.action, MessageAction.FORWARD_STANDALONE)
+        self.assertEqual(decision.close_reason, BlockCloseReason.FORWARDED_MESSAGE)
+
+    def test_channel_voice_is_standalone_and_closes_active_block(self) -> None:
+        decision = self.policy.decide(
+            self.voice(allows_blocks=False),
+            self.active_block(),
+        )
+
+        self.assertEqual(decision.action, MessageAction.FORWARD_STANDALONE)
+        self.assertEqual(decision.close_reason, BlockCloseReason.BLOCKS_DISABLED)
+
+    def test_short_channel_voice_cannot_use_an_existing_block(self) -> None:
+        decision = self.policy.decide(
+            self.voice(allows_blocks=False, duration_seconds=1.0),
+            self.active_block(),
+        )
+
+        self.assertEqual(decision.action, MessageAction.IGNORE_SHORT_VOICE)
+        self.assertEqual(decision.close_reason, BlockCloseReason.BLOCKS_DISABLED)
+
+    def test_short_forwarded_voice_closes_block_without_being_forwarded(self) -> None:
+        decision = self.policy.decide(
+            self.voice(is_forwarded=True, duration_seconds=1.0),
+            self.active_block(),
+        )
+
+        self.assertEqual(decision.action, MessageAction.IGNORE_SHORT_VOICE)
+        self.assertEqual(decision.close_reason, BlockCloseReason.FORWARDED_MESSAGE)
+
     def test_other_author_closes_before_starting_new_block(self) -> None:
         decision = self.policy.decide(
             self.voice(author_key="sender:99"), self.active_block()
@@ -100,18 +136,24 @@ class ResetPolicyTests(unittest.TestCase):
         message_id: int,
         *,
         message_at: datetime | None,
+        source_id: int = -1001,
+        status: JobStatus = JobStatus.FORWARDED,
         block_id: int | None = None,
         target_chat_id: int | None = -1009,
         target_message_id: int | None = None,
+        origin_chat_id: int | None = None,
+        origin_message_id: int | None = None,
     ) -> ForwardingJob:
         return ForwardingJob(
-            source_id=-1001,
+            source_id=source_id,
             message_id=message_id,
-            status=JobStatus.FORWARDED,
+            status=status,
             target_chat_id=target_chat_id,
             target_message_id=target_message_id,
             block_id=block_id,
             source_message_at=message_at,
+            origin_chat_id=origin_chat_id,
+            origin_message_id=origin_message_id,
         )
 
     def block(self) -> VoiceBlock:
@@ -160,6 +202,77 @@ class ResetPolicyTests(unittest.TestCase):
         )
         self.assertEqual(plan.block_ids, (1,))
         self.assertEqual(plan.target_message_ids, (100, 101, 102))
+
+    def test_reset_includes_jobs_with_the_same_forwarded_origin(self) -> None:
+        snapshot = ResetSnapshot(
+            jobs=(
+                self.job(
+                    15,
+                    message_at=self.cutoff + timedelta(minutes=1),
+                    target_message_id=101,
+                    origin_chat_id=-100777,
+                    origin_message_id=123,
+                ),
+                self.job(
+                    8,
+                    source_id=-1002,
+                    status=JobStatus.IGNORED,
+                    message_at=self.cutoff - timedelta(days=1),
+                    origin_chat_id=-100777,
+                    origin_message_id=123,
+                ),
+            ),
+            blocks=(),
+        )
+
+        plan = self.policy.create_plan(
+            snapshot,
+            {-1001: 10},
+            cutoff=self.cutoff,
+        )
+
+        self.assertEqual(
+            tuple((key.source_id, key.message_id) for key in plan.jobs),
+            ((-1002, 8), (-1001, 15)),
+        )
+        self.assertEqual(plan.target_message_ids, (101,))
+
+    def test_source_limited_reset_does_not_include_aliases_from_other_sources(
+        self,
+    ) -> None:
+        snapshot = ResetSnapshot(
+            jobs=(
+                self.job(
+                    15,
+                    message_at=self.cutoff + timedelta(minutes=1),
+                    target_message_id=101,
+                    origin_chat_id=-100777,
+                    origin_message_id=123,
+                ),
+                self.job(
+                    8,
+                    source_id=-1002,
+                    status=JobStatus.IGNORED,
+                    message_at=self.cutoff - timedelta(days=1),
+                    origin_chat_id=-100777,
+                    origin_message_id=123,
+                ),
+            ),
+            blocks=(),
+        )
+
+        plan = self.policy.create_plan(
+            snapshot,
+            {-1001: 10},
+            cutoff=self.cutoff,
+            source_ids=frozenset((-1001,)),
+        )
+
+        self.assertEqual(
+            tuple((key.source_id, key.message_id) for key in plan.jobs),
+            ((-1001, 15),),
+        )
+        self.assertEqual(plan.target_message_ids, (101,))
 
     def test_timestamp_is_primary_and_message_id_is_legacy_fallback(self) -> None:
         snapshot = ResetSnapshot(

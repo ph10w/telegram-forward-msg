@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime
 from typing import Protocol
 
@@ -37,6 +35,13 @@ class MonitoringStateRepository(Protocol):
 
     def is_complete(self, source_id: int, message_id: int) -> bool: ...
 
+    def has_forwarded_origin(
+        self,
+        origin_chat_id: int,
+        origin_message_id: int,
+        target_chat_id: int,
+    ) -> bool: ...
+
     def mark_pending(
         self,
         source_id: int,
@@ -44,6 +49,10 @@ class MonitoringStateRepository(Protocol):
         *,
         block_id: int | None = None,
         message_at: datetime | None = None,
+        author_key: str | None = None,
+        author_label: str | None = None,
+        origin_chat_id: int | None = None,
+        origin_message_id: int | None = None,
     ) -> None: ...
 
     def mark_forwarded(
@@ -55,6 +64,10 @@ class MonitoringStateRepository(Protocol):
         target_message_id: int | None = None,
         block_id: int | None = None,
         message_at: datetime | None = None,
+        author_key: str | None = None,
+        author_label: str | None = None,
+        origin_chat_id: int | None = None,
+        origin_message_id: int | None = None,
     ) -> int | None: ...
 
     def mark_failed(self, source_id: int, message_id: int, error: str) -> None: ...
@@ -65,7 +78,12 @@ class MonitoringStateRepository(Protocol):
         message_id: int,
         reason: str,
         *,
+        target_chat_id: int | None = None,
         message_at: datetime | None = None,
+        author_key: str | None = None,
+        author_label: str | None = None,
+        origin_chat_id: int | None = None,
+        origin_message_id: int | None = None,
     ) -> None: ...
 
     def pending_jobs(self) -> list[PendingJob]: ...
@@ -83,6 +101,8 @@ class ResetTelegramGateway(Protocol):
     async def start(self) -> None: ...
 
     async def resolve_target(self, reference: int | str) -> int: ...
+
+    async def resolve_source(self, reference: int | str) -> int: ...
 
     async def boundary_before(
         self, reference: int | str, cutoff: datetime

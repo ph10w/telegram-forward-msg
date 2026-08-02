@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import asyncio
 import logging
@@ -8,7 +6,7 @@ import sys
 from datetime import timedelta
 
 from .bootstrap import list_available_chats, reset_forwarder, run_monitoring
-from .config import BaseConfig, ConfigError, ForwarderConfig
+from .config import BaseConfig, ChatRef, ConfigError, ForwarderConfig, parse_chat_ref
 from .errors import TelegramServiceError
 
 RESET_PERIOD_PATTERN = re.compile(r"^(?P<amount>[1-9]\d*)(?P<unit>[HDW])$", re.IGNORECASE)
@@ -27,6 +25,15 @@ def _parser() -> argparse.ArgumentParser:
             "Monitoring starten, Chat-IDs anzeigen oder Scan-Zustand vollständig "
             "beziehungsweise zeitlich begrenzt zurücksetzen, z. B. reset=1W "
             "(Standard: run)."
+        ),
+    )
+    parser.add_argument(
+        "--source",
+        type=parse_chat_ref,
+        metavar="CHAT",
+        help=(
+            "Reset auf einen Source-Chat begrenzen, z. B. "
+            "--source=-1001234567890 oder --source=@gruppe."
         ),
     )
     return parser
@@ -72,19 +79,25 @@ def main() -> None:
     args = _parser().parse_args()
     try:
         command, reset_period = parse_command(args.command)
+        source_chat: ChatRef | None = args.source
+        if source_chat is not None and command != "reset":
+            raise ConfigError("--source kann nur mit reset verwendet werden.")
         if command == "reset":
             config = ForwarderConfig.from_env()
             _configure_logging(config.log_level)
-            result = asyncio.run(reset_forwarder(config, reset_period))
+            result = asyncio.run(
+                reset_forwarder(config, reset_period, source_chat)
+            )
+            scope = f" für Quelle {source_chat}" if source_chat is not None else ""
             if result.cutoff is None:
                 print(
-                    f"Scan-Zustand zurückgesetzt ({result.state_db}): "
+                    f"Scan-Zustand{scope} zurückgesetzt ({result.state_db}): "
                     f"{result.cursor_count} Cursor und "
                     f"{result.history_count} bekannte Nachrichten gelöscht."
                 )
             else:
                 print(
-                    f"Scan-Zustand seit "
+                    f"Scan-Zustand{scope} seit "
                     f"{result.cutoff.astimezone():%Y-%m-%d %H:%M:%S %Z} "
                     f"zurückgesetzt ({result.state_db}): "
                     f"{result.cursor_count} Cursor zurückgesetzt und "

@@ -6,7 +6,7 @@ MTProto API through Telethon; audio files are never downloaded locally.
 
 ## Requirements
 
-- Python 3.10 or newer
+- Python 3.14 or newer
 - Your account must be a member of the source groups.
 - Your account must have permission to post messages in the target channel.
 - Consent from the affected group members or another appropriate legal basis
@@ -69,6 +69,11 @@ regardless of its duration. The default value `0` disables the filter.
 Telegram IDs for supergroups and channels usually start with `-100`. Configure
 private groups without a public username by using their numeric ID.
 
+Collection blocks are created only for basic groups and supergroups. Voice
+messages from broadcast channels are transferred individually without a
+collection header; their author, original text, timestamp, and source link are
+kept together in the voice-message caption.
+
 Telethon keeps recently encountered users, chats, and channels in memory. This
 project reduces Telethon's default cache limit from 5,000 to 500 entities. You
 can adjust it in `.env`, but values below 100 are rejected because an
@@ -89,13 +94,17 @@ Reset all known messages, or only a recent period, with:
 ```powershell
 python -m telegram_voice_forwarder reset
 python -m telegram_voice_forwarder reset=1W
+python -m telegram_voice_forwarder reset --source=-1001234567890
+python -m telegram_voice_forwarder reset=1W --source=-1001234567890
 ```
 
 Periods accept `H`, `D`, or `W`. A time-limited reset uses original Telegram
 timestamps and includes complete collection blocks. Both reset modes remove
 known history and safely tracked target messages before changing local state;
 older unmatched target messages are reported. Stop the monitor before running
-a reset.
+a reset. Use `--source=CHAT` with a numeric ID or username to limit either reset
+mode to one source chat; history, blocks, cursors, and target messages belonging
+to other sources remain untouched.
 
 ## Architecture
 
@@ -110,6 +119,32 @@ On Linux, the process can run as a systemd service, for example. Make sure the
 `.session` file and SQLite database are stored on a persistent volume with
 restricted access. A normal process stop with `Ctrl+C` closes the connection
 and database cleanly.
+
+### Raspberry Pi OS service
+
+Configure `.env`, then run the installer from the project directory:
+
+```bash
+bash scripts/install-raspberry-pi-service.sh
+```
+
+The script installs missing `python3` and `python3-venv` packages through APT,
+requires Python 3.14 or newer, creates `.venv`, installs the project, and
+registers `telegram-voice-forwarder.service` with systemd. If the Telegram
+session is missing, it starts the interactive login before installing and
+starting the service. Run the script as the account that should own the
+session and runtime data; when invoked through `sudo`, it uses `SUDO_USER`.
+Root-only sessions must specify a regular account, for example
+`SERVICE_USER=pi bash scripts/install-raspberry-pi-service.sh`.
+
+The service starts automatically at boot and restarts after failures. Output is
+stored in the system journal:
+
+```bash
+sudo systemctl status telegram-voice-forwarder.service
+sudo journalctl -u telegram-voice-forwarder.service -f
+sudo systemctl restart telegram-voice-forwarder.service
+```
 
 ### Windows service
 

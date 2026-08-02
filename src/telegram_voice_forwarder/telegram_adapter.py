@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime
 from typing import Any
 
@@ -56,6 +54,10 @@ class TelethonResetGateway:
     async def resolve_target(self, reference: int | str) -> int:
         self._target = await self._client.get_entity(reference)
         return utils.get_peer_id(self._target)
+
+    async def resolve_source(self, reference: int | str) -> int:
+        entity = await self._client.get_entity(reference)
+        return utils.get_peer_id(entity)
 
     async def boundary_before(
         self, reference: int | str, cutoff: datetime

@@ -4,7 +4,7 @@ These instructions apply to the entire repository.
 
 ## Project overview
 
-Telegram Voice Forwarder is a Python 3.10+ service that signs in through a
+Telegram Voice Forwarder is a Python 3.14+ service that signs in through a
 personal Telegram account with Telethon. It monitors configured source groups,
 filters voice messages, and publishes matching messages to a private target
 channel.
@@ -90,6 +90,10 @@ python -m unittest discover -s tests -v
   only after five consecutive occurrences; a joining voice message resets that
   count. Four hours without an accepted voice message also closes the block;
   use Telegram's message timestamps so catch-up scans behave like live traffic.
+- Classify every resolved source as a basic group, supergroup, or broadcast
+  channel. Allow collection blocks only for basic groups and supergroups.
+  Transfer channel voice messages individually with author, text, timestamp,
+  and monitored-source link in the same caption.
 - Persist collection headers, counts, and active/closed state in `StateStore`
   so blocks continue consistently after a restart.
 - `INITIAL_SCAN_LIMIT` only controls the first scan after the cursor has been
@@ -98,6 +102,10 @@ python -m unittest discover -s tests -v
   eligible messages can be processed again. It deletes safely tracked messages
   from the currently configured target before changing local state; if a
   Telegram deletion fails, local state must remain intact.
+- A reset limited with `--source` must select jobs, blocks, cursors, forwarded
+  origin aliases, and target messages only from that source. A full scoped reset
+  deletes that source's cursor so `INITIAL_SCAN_LIMIT` applies again; a scoped
+  period reset rewinds only that source.
 - A time-limited reset rewinds each configured source to the message before
   cutoff and uses each job's persisted original `source_message_at` as its
   primary inclusion criterion. If a block's `last_voice_at` is inside the reset
@@ -108,6 +116,13 @@ python -m unittest discover -s tests -v
 - Put the author and editable voice-message count in the collection header.
   Preserve the original text in each copied voice-message caption and use its
   local timestamp as the clickable source-link label.
+- Treat voice messages with `fwd_from` as standalone messages. They close any
+  active collection block, never join or create a block, and never receive a
+  collection header. Persist and display the original forwarded author and
+  `fwd_from.date`, while the clickable link continues to target the message in
+  the monitored source chat. Deduplicate across source chats only when Telegram
+  exposes `(original_chat_id, original_message_id)`, scoped to the configured
+  target chat; do not infer identity from media IDs or timestamps.
 - Preserve Telegram UTF-16 entity offsets when changing captions.
 - Private supergroup links use `https://t.me/c/<internal-id>/<message-id>` and
   only work for users who belong to the source group.

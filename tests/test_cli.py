@@ -1,7 +1,7 @@
 import unittest
 from datetime import timedelta
 
-from telegram_voice_forwarder.cli import parse_command
+from telegram_voice_forwarder.cli import _parser, parse_command
 from telegram_voice_forwarder.config import ConfigError
 
 
@@ -13,6 +13,13 @@ class CliTests(unittest.TestCase):
 
     def test_keeps_full_reset_command(self) -> None:
         self.assertEqual(parse_command("reset"), ("reset", None))
+
+    def test_parses_numeric_and_named_reset_sources(self) -> None:
+        numeric = _parser().parse_args(["reset=1W", "--source=-1001"])
+        named = _parser().parse_args(["reset", "--source=@group"])
+
+        self.assertEqual(numeric.source, -1001)
+        self.assertEqual(named.source, "@group")
 
     def test_rejects_invalid_period_reset_commands(self) -> None:
         for value in ("reset=", "reset=0W", "reset=1M", "reset=1.5W"):
