@@ -4,7 +4,7 @@ These instructions apply to the entire repository.
 
 ## Project overview
 
-Telegram Voice Forwarder is a Python 3.14+ service that signs in through a
+Telegram Voice Forwarder is a Python 3.13+ service that signs in through a
 personal Telegram account with Telethon. It monitors configured source groups,
 filters voice messages, and publishes matching messages to a private target
 channel.
@@ -96,6 +96,9 @@ python -m unittest discover -s tests -v
   and monitored-source link in the same caption.
 - Persist collection headers, counts, and active/closed state in `StateStore`
   so blocks continue consistently after a restart.
+- Persist `duration_seconds` for every observed voice-message job. Treat it as
+  required for successfully transferred, non-forwarded jobs that can serve as
+  internal-forward origin candidates.
 - `INITIAL_SCAN_LIMIT` only controls the first scan after the cursor has been
   reset.
 - The `reset` command removes both scan cursors and known-message history so
@@ -120,9 +123,17 @@ python -m unittest discover -s tests -v
   active collection block, never join or create a block, and never receive a
   collection header. Persist and display the original forwarded author and
   `fwd_from.date`, while the clickable link continues to target the message in
-  the monitored source chat. Deduplicate across source chats only when Telegram
+  the monitored source chat. Deduplicate across source chats when Telegram
   exposes `(original_chat_id, original_message_id)`, scoped to the configured
-  target chat; do not infer identity from media IDs or timestamps.
+  target chat. If Telegram omits both IDs for an internal forward, infer
+  `(source_id, original_message_id)` only from exactly one earlier successfully
+  transferred non-forwarded message in that source with the same original
+  author, exact Telegram timestamp, and voice-message duration. Do not infer
+  from media IDs, and process ambiguous matches normally.
+- Treat `forwarding_jobs.duration_seconds` as part of the current database
+  contract. Fresh databases create it directly. Legacy databases must be
+  backfilled from Telegram in a separate operational migration before running
+  code that relies on it; do not add an inference fallback for missing values.
 - Preserve Telegram UTF-16 entity offsets when changing captions.
 - Private supergroup links use `https://t.me/c/<internal-id>/<message-id>` and
   only work for users who belong to the source group.
@@ -141,6 +152,9 @@ python -m unittest discover -s tests -v
 - Do not print message contents, credentials, or session material in logs or
   tests.
 - Keep runtime data under the ignored `data/` directory.
+- Keep relative runtime paths anchored operationally by requiring commands to
+  run from the directory containing the loaded `.env`; fail configuration
+  validation on a mismatch instead of silently rebasing paths.
 - Any live Telegram test that posts, edits, forwards, or deletes a message must
   be explicitly authorized. Prefer unit tests with mocked clients.
 

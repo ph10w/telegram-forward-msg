@@ -51,6 +51,8 @@ class StateStore:
                 author_label TEXT,
                 origin_chat_id INTEGER,
                 origin_message_id INTEGER,
+                is_forwarded INTEGER,
+                duration_seconds REAL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (source_id, message_id)
             );
@@ -91,6 +93,10 @@ class StateStore:
         if "origin_message_id" not in columns:
             self._connection.execute(
                 "ALTER TABLE forwarding_jobs ADD COLUMN origin_message_id INTEGER"
+            )
+        if "is_forwarded" not in columns:
+            self._connection.execute(
+                "ALTER TABLE forwarding_jobs ADD COLUMN is_forwarded INTEGER"
             )
         self._connection.execute(
             """
@@ -378,14 +384,68 @@ class StateStore:
         row = self._connection.execute(
             """
             SELECT 1 FROM forwarding_jobs
-            WHERE origin_chat_id = ? AND origin_message_id = ?
-              AND target_chat_id = ?
+            WHERE target_chat_id = ?
               AND status = 'forwarded'
+              AND (
+                  (origin_chat_id = ? AND origin_message_id = ?)
+                  OR (
+                      source_id = ? AND message_id = ?
+                      AND COALESCE(
+                          is_forwarded,
+                          CASE WHEN block_id IS NOT NULL THEN 0 END
+                      ) = 0
+                  )
+              )
             LIMIT 1
             """,
-            (origin_chat_id, origin_message_id, target_chat_id),
+            (
+                target_chat_id,
+                origin_chat_id,
+                origin_message_id,
+                origin_chat_id,
+                origin_message_id,
+            ),
         ).fetchone()
         return row is not None
+
+    def matching_original_message_ids(
+        self,
+        source_id: int,
+        target_chat_id: int,
+        message_at: datetime,
+        author_key: str,
+        duration_seconds: float,
+        before_message_id: int,
+    ) -> tuple[int, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT jobs.message_id
+            FROM forwarding_jobs AS jobs
+            LEFT JOIN voice_blocks AS blocks ON blocks.id = jobs.block_id
+            WHERE jobs.source_id = ?
+              AND jobs.target_chat_id = ?
+              AND jobs.message_id < ?
+              AND jobs.source_message_at = ?
+              AND jobs.duration_seconds = ?
+              AND jobs.status = 'forwarded'
+              AND COALESCE(jobs.author_key, blocks.author_key) = ?
+              AND COALESCE(
+                  jobs.is_forwarded,
+                  CASE WHEN jobs.block_id IS NOT NULL THEN 0 END
+              ) = 0
+            ORDER BY jobs.message_id
+            LIMIT 2
+            """,
+            (
+                source_id,
+                target_chat_id,
+                before_message_id,
+                self._timestamp(message_at),
+                duration_seconds,
+                author_key,
+            ),
+        ).fetchall()
+        return tuple(int(row[0]) for row in rows)
 
     def mark_pending(
         self,
@@ -398,6 +458,8 @@ class StateStore:
         author_label: str | None = None,
         origin_chat_id: int | None = None,
         origin_message_id: int | None = None,
+        is_forwarded: bool | None = None,
+        duration_seconds: float | None = None,
     ) -> None:
         timestamp = self._timestamp(message_at) if message_at is not None else None
         with self._connection:
@@ -406,9 +468,10 @@ class StateStore:
                 INSERT INTO forwarding_jobs(
                     source_id, message_id, status, block_id,
                     source_message_at, author_key, author_label,
-                    origin_chat_id, origin_message_id, updated_at
+                    origin_chat_id, origin_message_id, is_forwarded,
+                    duration_seconds, updated_at
                 )
-                VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id, message_id) DO UPDATE SET
                     status = 'pending',
                     block_id = excluded.block_id,
@@ -429,6 +492,12 @@ class StateStore:
                         excluded.origin_message_id,
                         forwarding_jobs.origin_message_id
                     ),
+                    is_forwarded = COALESCE(
+                        excluded.is_forwarded, forwarding_jobs.is_forwarded
+                    ),
+                    duration_seconds = COALESCE(
+                        excluded.duration_seconds, forwarding_jobs.duration_seconds
+                    ),
                     updated_at = excluded.updated_at
                 WHERE forwarding_jobs.status NOT IN ('forwarded', 'ignored')
                 """,
@@ -441,6 +510,8 @@ class StateStore:
                     author_label,
                     origin_chat_id,
                     origin_message_id,
+                    is_forwarded,
+                    duration_seconds,
                     self._now(),
                 ),
             )
@@ -468,6 +539,8 @@ class StateStore:
         author_label: str | None = None,
         origin_chat_id: int | None = None,
         origin_message_id: int | None = None,
+        is_forwarded: bool | None = None,
+        duration_seconds: float | None = None,
     ) -> int | None:
         with self._connection:
             result = self._connection.execute(
@@ -481,6 +554,8 @@ class StateStore:
                     author_label = COALESCE(?, author_label),
                     origin_chat_id = COALESCE(?, origin_chat_id),
                     origin_message_id = COALESCE(?, origin_message_id),
+                    is_forwarded = COALESCE(?, is_forwarded),
+                    duration_seconds = COALESCE(?, duration_seconds),
                     updated_at = ?
                 WHERE source_id = ? AND message_id = ?
                   AND status NOT IN ('forwarded', 'ignored')
@@ -494,6 +569,8 @@ class StateStore:
                     author_label,
                     origin_chat_id,
                     origin_message_id,
+                    is_forwarded,
+                    duration_seconds,
                     self._now(),
                     source_id,
                     message_id,
@@ -547,6 +624,8 @@ class StateStore:
         author_label: str | None = None,
         origin_chat_id: int | None = None,
         origin_message_id: int | None = None,
+        is_forwarded: bool | None = None,
+        duration_seconds: float | None = None,
     ) -> None:
         self.mark_pending(
             source_id,
@@ -556,6 +635,8 @@ class StateStore:
             author_label=author_label,
             origin_chat_id=origin_chat_id,
             origin_message_id=origin_message_id,
+            is_forwarded=is_forwarded,
+            duration_seconds=duration_seconds,
         )
         with self._connection:
             self._connection.execute(

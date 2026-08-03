@@ -1,12 +1,23 @@
 import os
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from telegram_voice_forwarder.config import ConfigError, ForwarderConfig, parse_chat_ref
 
 
 class ConfigTests(unittest.TestCase):
+    def setUp(self) -> None:
+        dotenv_file = Path.cwd() / ".env"
+        self.enterContext(
+            patch(
+                "telegram_voice_forwarder.config.find_dotenv",
+                return_value=str(dotenv_file),
+            )
+        )
+        self.enterContext(patch("telegram_voice_forwarder.config.load_dotenv"))
+
     def test_parse_numeric_and_named_chat_references(self) -> None:
         self.assertEqual(parse_chat_ref(" -100123 "), -100123)
         self.assertEqual(parse_chat_ref("@example"), "@example")
@@ -69,6 +80,73 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=True):
             with self.assertRaises(ConfigError):
                 ForwarderConfig.from_env()
+
+    def test_rejects_relative_runtime_paths_outside_dotenv_directory(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+            "TELEGRAM_SESSION": "data/telegram-monitor",
+            "STATE_DB": "data/forwarder.sqlite3",
+        }
+        with TemporaryDirectory() as dotenv_directory:
+            dotenv_file = Path(dotenv_directory, ".env")
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "telegram_voice_forwarder.config.find_dotenv",
+                    return_value=str(dotenv_file),
+                ),
+                patch("telegram_voice_forwarder.config.load_dotenv"),
+                patch(
+                    "telegram_voice_forwarder.config.Path.cwd",
+                    return_value=Path(dotenv_directory, "elsewhere"),
+                ),
+            ):
+                with self.assertRaisesRegex(ConfigError, "TELEGRAM_SESSION ist relativ"):
+                    ForwarderConfig.from_env()
+
+    def test_rejects_relative_runtime_paths_without_dotenv(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("telegram_voice_forwarder.config.find_dotenv", return_value=""),
+        ):
+            with self.assertRaisesRegex(ConfigError, "keine \\.env gefunden"):
+                ForwarderConfig.from_env()
+
+    def test_allows_absolute_runtime_paths_outside_dotenv_directory(self) -> None:
+        with TemporaryDirectory() as dotenv_directory:
+            environment = {
+                "TELEGRAM_API_ID": "123",
+                "TELEGRAM_API_HASH": "secret",
+                "TELEGRAM_SOURCE_CHATS": "-1001",
+                "TELEGRAM_TARGET_CHAT": "-1002",
+                "TELEGRAM_SESSION": str(Path(dotenv_directory, "telegram-monitor")),
+                "STATE_DB": str(Path(dotenv_directory, "forwarder.sqlite3")),
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "telegram_voice_forwarder.config.find_dotenv",
+                    return_value=str(Path(dotenv_directory, ".env")),
+                ),
+                patch("telegram_voice_forwarder.config.load_dotenv"),
+                patch(
+                    "telegram_voice_forwarder.config.Path.cwd",
+                    return_value=Path(dotenv_directory, "elsewhere"),
+                ),
+            ):
+                config = ForwarderConfig.from_env()
+
+        self.assertTrue(config.session_path.is_absolute())
+        self.assertTrue(config.state_db.is_absolute())
 
 
 if __name__ == "__main__":

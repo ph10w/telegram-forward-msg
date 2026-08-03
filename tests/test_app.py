@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from telethon import helpers, utils
-from telethon.tl.types import Channel, Chat, PeerChannel
+from telethon.tl.types import Channel, Chat, PeerChannel, PeerUser
 
 from telegram_voice_forwarder.app import (
     ResolvedSource,
@@ -153,6 +153,33 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(source_kind(supergroup), SourceKind.SUPERGROUP)
         self.assertIs(source_kind(channel), SourceKind.CHANNEL)
 
+    async def test_resolves_configured_chats_without_full_dialog_scan(self) -> None:
+        target = Channel(
+            id=2,
+            title="Target",
+            photo=None,
+            date=None,
+            broadcast=True,
+        )
+        source = Channel(
+            id=1,
+            title="Source",
+            photo=None,
+            date=None,
+            megagroup=True,
+        )
+        self.client.get_entity = AsyncMock(side_effect=(target, source))
+        self.client.get_dialogs = AsyncMock()
+
+        await self.forwarder.resolve_chats()
+
+        self.assertEqual(
+            tuple(call.args[0] for call in self.client.get_entity.await_args_list),
+            (-1002, -1001),
+        )
+        self.client.get_dialogs.assert_not_awaited()
+        self.assertIs(self.forwarder.sources[-1000000000001].kind, SourceKind.SUPERGROUP)
+
     async def test_channel_voices_are_forwarded_without_collection_block(self) -> None:
         source_entity = SimpleNamespace(username=None)
         self.forwarder.sources[-1001] = ResolvedSource(
@@ -283,6 +310,146 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
             ).target_message_ids,
             (901,),
         )
+
+    async def test_deduplicates_internal_forward_without_telegram_origin_id(
+        self,
+    ) -> None:
+        original_at = datetime(2026, 8, 3, 17, 55, 58, tzinfo=timezone.utc)
+        sender = SimpleNamespace(
+            id=77,
+            first_name="Max",
+            last_name=None,
+            username=None,
+        )
+        original = SimpleNamespace(
+            id=437101,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=300.0),
+            raw_text="",
+            entities=[],
+            date=original_at,
+            post_author=None,
+            sender_id=77,
+            sender=sender,
+        )
+        internal_forward = SimpleNamespace(
+            id=437102,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=300.0),
+            raw_text="",
+            entities=[],
+            date=datetime(2026, 8, 3, 17, 57, 46, tzinfo=timezone.utc),
+            fwd_from=SimpleNamespace(
+                date=original_at,
+                post_author=None,
+                from_name=None,
+                saved_from_name=None,
+                saved_from_peer=None,
+                saved_from_msg_id=None,
+                from_id=PeerUser(77),
+                channel_post=None,
+            ),
+            forward=SimpleNamespace(
+                sender=sender,
+                chat=None,
+                sender_id=77,
+                chat_id=None,
+            ),
+            post_author=None,
+            sender_id=77,
+            sender=sender,
+        )
+
+        await self.forwarder.process_message(-1001, original)
+        await self.forwarder.process_message(-1001, internal_forward)
+
+        self.client.send_message.assert_awaited_once()
+        self.client.send_file.assert_awaited_once()
+        jobs = self.state.load_reset_snapshot().jobs
+        duplicate = next(job for job in jobs if job.message_id == 437102)
+        self.assertIs(duplicate.status, JobStatus.IGNORED)
+        self.assertEqual(duplicate.target_chat_id, -1002)
+        self.assertEqual(duplicate.origin_chat_id, -1001)
+        self.assertEqual(duplicate.origin_message_id, 437101)
+
+    async def test_keeps_internal_forward_when_origin_hint_is_ambiguous(self) -> None:
+        original_at = datetime(2026, 8, 3, 17, 55, 58, tzinfo=timezone.utc)
+        block = self.state.create_voice_block(
+            -1001,
+            "sender:77",
+            "Max",
+            -1002,
+            800,
+            437100,
+            original_at,
+        )
+        for message_id in (437100, 437101):
+            self.state.mark_pending(
+                -1001,
+                message_id,
+                block_id=block.id,
+                message_at=original_at,
+                is_forwarded=False,
+                duration_seconds=300.0,
+            )
+            self.state.mark_forwarded(
+                -1001,
+                message_id,
+                target_chat_id=-1002,
+                target_message_id=message_id,
+                block_id=block.id,
+                message_at=original_at,
+                is_forwarded=False,
+                duration_seconds=300.0,
+            )
+        sender = SimpleNamespace(
+            id=77,
+            first_name="Max",
+            last_name=None,
+            username=None,
+        )
+        internal_forward = SimpleNamespace(
+            id=437102,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=300.0),
+            raw_text="",
+            entities=[],
+            date=datetime(2026, 8, 3, 17, 57, 46, tzinfo=timezone.utc),
+            fwd_from=SimpleNamespace(
+                date=original_at,
+                post_author=None,
+                from_name=None,
+                saved_from_name=None,
+                saved_from_peer=None,
+                saved_from_msg_id=None,
+                from_id=PeerUser(77),
+                channel_post=None,
+            ),
+            forward=SimpleNamespace(
+                sender=sender,
+                chat=None,
+                sender_id=77,
+                chat_id=None,
+            ),
+            post_author=None,
+            sender_id=77,
+            sender=sender,
+        )
+
+        await self.forwarder.process_message(-1001, internal_forward)
+
+        self.client.send_file.assert_awaited_once()
+        job = next(
+            job
+            for job in self.state.load_reset_snapshot().jobs
+            if job.message_id == 437102
+        )
+        self.assertIs(job.status, JobStatus.FORWARDED)
+        self.assertIsNone(job.origin_chat_id)
+        self.assertIsNone(job.origin_message_id)
 
     async def test_does_not_dedupe_without_original_message_reference(self) -> None:
         original_at = datetime(2026, 7, 16, 12, 50, 32, tzinfo=timezone.utc)

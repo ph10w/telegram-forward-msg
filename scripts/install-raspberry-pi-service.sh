@@ -91,8 +91,8 @@ if (( ${#packages[@]} > 0 )); then
     "${ROOT[@]}" apt-get install -y --no-install-recommends "${packages[@]}"
 fi
 
-python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 14))' \
-    || fail "Python 3.14 or newer is required. Upgrade Raspberry Pi OS before continuing."
+python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 13))' \
+    || fail "Python 3.13 or newer is required. Upgrade Raspberry Pi OS before continuing."
 
 if [[ ! -x "$PYTHON_EXE" ]]; then
     if [[ -e "$VENV_DIR" ]]; then

@@ -275,13 +275,13 @@ class VoiceForwarder:
         self._processing_lock = asyncio.Lock()
 
     async def resolve_chats(self) -> None:
-        # Populate the entity cache so numeric IDs of private chats can resolve.
-        await self.client.get_dialogs()
-        self.target = await self.client.get_entity(self.config.target_chat)
+        LOGGER.info("Löse Telegram-Zielchat %s auf", self.config.target_chat)
+        self.target = await self._resolve_entity(self.config.target_chat)
         self.target_id = utils.get_peer_id(self.target)
 
         for reference in self.config.source_chats:
-            entity = await self.client.get_entity(reference)
+            LOGGER.info("Löse Telegram-Quellchat %s auf", reference)
+            entity = await self._resolve_entity(reference)
             source_id = utils.get_peer_id(entity)
             if source_id == self.target_id:
                 raise ValueError("Quell- und Zielchat dürfen nicht identisch sein.")
@@ -299,6 +299,17 @@ class VoiceForwarder:
             self.target_id,
         )
 
+    async def _resolve_entity(self, reference: int | str) -> Any:
+        try:
+            return await self.client.get_entity(reference)
+        except ValueError:
+            LOGGER.info(
+                "Telegram-Entity %s fehlt im lokalen Cache; lade Dialogliste",
+                reference,
+            )
+            await self.client.get_dialogs()
+            return await self.client.get_entity(reference)
+
     async def process_message(
         self,
         source_id: int,
@@ -310,6 +321,7 @@ class VoiceForwarder:
             message, include_video_notes=self.config.include_video_notes
         )
         is_forwarded = getattr(message, "fwd_from", None) is not None
+        duration = media_duration_seconds(message) if is_voice else None
         source = self.sources.get(source_id)
         allows_blocks = source.kind.allows_blocks if source is not None else True
         if is_voice and self.state.is_complete(source_id, message.id):
@@ -331,14 +343,12 @@ class VoiceForwarder:
             active = self.state.active_voice_block(source_id)
             author_key: str | None = None
             author_label: str | None = None
-            duration: float | None = None
             if is_voice:
                 author_key, author_label = await (
                     forwarded_author_details(message)
                     if is_forwarded
                     else message_author_details(message)
                 )
-                duration = media_duration_seconds(message)
             if self.target_id is None:
                 raise RuntimeError("Zielchat-ID ist nicht aufgelöst.")
             decision = BlockPolicy(
@@ -414,6 +424,8 @@ class VoiceForwarder:
                         message_at=message_at,
                         author_key=author_key if is_forwarded else None,
                         author_label=author_label if is_forwarded else None,
+                        is_forwarded=is_forwarded,
+                        duration_seconds=duration,
                     )
                     LOGGER.info(
                         "Kurze erste Sprachnachricht ignoriert "
@@ -443,6 +455,7 @@ class VoiceForwarder:
                         message_at=message_at,
                         author_key=author_key,
                         author_label=author_label,
+                        duration_seconds=duration,
                     )
                     return
                 case MessageAction.JOIN_BLOCK:
@@ -464,7 +477,11 @@ class VoiceForwarder:
                         )
 
                     self.state.mark_pending(
-                        source_id, message.id, message_at=message_at
+                        source_id,
+                        message.id,
+                        message_at=message_at,
+                        is_forwarded=False,
+                        duration_seconds=duration,
                     )
                     try:
                         header = await self.client.send_message(
@@ -505,6 +522,8 @@ class VoiceForwarder:
             message.id,
             block_id=block.id,
             message_at=message_at,
+            is_forwarded=False,
+            duration_seconds=duration,
         )
         try:
             target_message_id = await self._send_with_retry(source_id, message)
@@ -524,6 +543,8 @@ class VoiceForwarder:
             target_message_id=target_message_id,
             block_id=block.id,
             message_at=message_at,
+            is_forwarded=False,
+            duration_seconds=duration,
         )
         if target_message_id is None:
             LOGGER.warning(
@@ -559,15 +580,55 @@ class VoiceForwarder:
         message_at: datetime,
         author_key: str,
         author_label: str,
+        duration_seconds: float | None,
     ) -> None:
         if self.target_id is None:
             raise RuntimeError("Zielchat-ID ist nicht aufgelöst.")
 
+        is_forwarded = getattr(message, "fwd_from", None) is not None
         origin = forwarded_origin(message)
-        if origin is not None and self.state.has_forwarded_origin(
-            *origin,
-            self.target_id,
-        ):
+        inferred_origin = False
+        if is_forwarded and origin is None:
+            candidates = (
+                self.state.matching_original_message_ids(
+                    source_id,
+                    self.target_id,
+                    message_at,
+                    author_key,
+                    duration_seconds,
+                    message.id,
+                )
+                if duration_seconds is not None
+                else ()
+            )
+            if len(candidates) == 1:
+                origin = source_id, candidates[0]
+                inferred_origin = True
+                LOGGER.info(
+                    "Ursprung einer internen Weiterleitung eindeutig ermittelt "
+                    "(Quelle %s, Nachricht %s, Original %s)",
+                    source_id,
+                    message.id,
+                    candidates[0],
+                )
+            elif len(candidates) > 1:
+                LOGGER.warning(
+                    "Ursprung einer internen Weiterleitung ist nicht eindeutig; "
+                    "Nachricht wird verarbeitet (Quelle %s, Nachricht %s)",
+                    source_id,
+                    message.id,
+                )
+
+        origin_already_forwarded = inferred_origin or (
+            origin is not None
+            and self.state.has_forwarded_origin(
+                *origin,
+                self.target_id,
+            )
+        )
+        if origin_already_forwarded:
+            if origin is None:
+                raise RuntimeError("Ermittelter Nachrichtenursprung fehlt.")
             self.state.mark_ignored(
                 source_id,
                 message.id,
@@ -578,6 +639,8 @@ class VoiceForwarder:
                 author_label=author_label,
                 origin_chat_id=origin[0],
                 origin_message_id=origin[1],
+                is_forwarded=is_forwarded,
+                duration_seconds=duration_seconds,
             )
             LOGGER.info(
                 "Bereits weitergeleitete Ursprungsnachricht ignoriert "
@@ -597,6 +660,8 @@ class VoiceForwarder:
             author_label=author_label,
             origin_chat_id=origin[0] if origin is not None else None,
             origin_message_id=origin[1] if origin is not None else None,
+            is_forwarded=is_forwarded,
+            duration_seconds=duration_seconds,
         )
         try:
             target_message_id = await self._send_with_retry(
@@ -624,6 +689,8 @@ class VoiceForwarder:
             author_label=author_label,
             origin_chat_id=origin[0] if origin is not None else None,
             origin_message_id=origin[1] if origin is not None else None,
+            is_forwarded=is_forwarded,
+            duration_seconds=duration_seconds,
         )
         if target_message_id is None:
             LOGGER.warning(

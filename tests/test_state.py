@@ -72,6 +72,61 @@ class StateStoreTests(unittest.TestCase):
             self.store.has_forwarded_origin(-100777, 123, -1008)
         )
 
+    def test_returns_at_most_two_original_message_candidates(self) -> None:
+        message_at = datetime(2026, 8, 3, 17, 55, 58, tzinfo=UTC)
+        block = self.store.create_voice_block(
+            -1001,
+            "sender:42",
+            "Max",
+            -1009,
+            100,
+            10,
+            message_at,
+        )
+        for message_id in (10, 11):
+            self.store.mark_pending(
+                -1001,
+                message_id,
+                block_id=block.id,
+                message_at=message_at,
+                is_forwarded=False,
+                duration_seconds=300.0,
+            )
+            self.store.mark_forwarded(
+                -1001,
+                message_id,
+                target_chat_id=-1009,
+                target_message_id=message_id + 100,
+                block_id=block.id,
+                message_at=message_at,
+                is_forwarded=False,
+                duration_seconds=300.0,
+            )
+
+        self.assertEqual(
+            self.store.matching_original_message_ids(
+                -1001,
+                -1009,
+                message_at,
+                "sender:42",
+                300.0,
+                12,
+            ),
+            (10, 11),
+        )
+        self.assertEqual(
+            self.store.matching_original_message_ids(
+                -1001,
+                -1009,
+                message_at,
+                "sender:42",
+                301.0,
+                12,
+            ),
+            (),
+        )
+        self.assertTrue(self.store.has_forwarded_origin(-1001, 10, -1009))
+
     def test_reset_removes_cursors_and_forwarding_history(self) -> None:
         self.store.mark_pending(-1001, 7)
         self.store.mark_forwarded(-1001, 7)
@@ -315,6 +370,7 @@ class StateStoreTests(unittest.TestCase):
         self.assertIn("author_label", columns)
         self.assertIn("origin_chat_id", columns)
         self.assertIn("origin_message_id", columns)
+        self.assertIn("is_forwarded", columns)
         self.assertIn("last_voice_at", block_columns)
         self.assertEqual(last_voice_at, "2026-08-01T08:00:00+00:00")
 

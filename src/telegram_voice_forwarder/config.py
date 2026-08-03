@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 type ChatRef = int | str
 
@@ -69,6 +69,38 @@ def _boolean(name: str, default: bool = False) -> bool:
     raise ConfigError(f"{name} muss true oder false sein.")
 
 
+def _load_environment() -> Path | None:
+    dotenv_file = find_dotenv()
+    if not dotenv_file:
+        load_dotenv()
+        return None
+
+    dotenv_path = Path(dotenv_file).resolve()
+    load_dotenv(dotenv_path)
+    return dotenv_path.parent
+
+
+def _runtime_path(name: str, default: str, dotenv_directory: Path | None) -> Path:
+    path = Path(os.getenv(name, default))
+    if path.is_absolute():
+        return path
+
+    current_directory = Path.cwd().resolve()
+    if dotenv_directory is None:
+        raise ConfigError(
+            f"{name} ist relativ ({path}), aber in {current_directory} wurde keine "
+            ".env gefunden. Führe den Befehl aus dem Verzeichnis der .env aus "
+            "oder verwende einen absoluten Pfad."
+        )
+    if current_directory != dotenv_directory:
+        raise ConfigError(
+            f"{name} ist relativ ({path}), aber die geladene .env liegt in "
+            f"{dotenv_directory}. Führe den Befehl aus diesem Verzeichnis aus "
+            "oder verwende einen absoluten Pfad."
+        )
+    return path
+
+
 @dataclass(frozen=True, slots=True)
 class BaseConfig:
     api_id: int
@@ -81,14 +113,18 @@ class BaseConfig:
 
     @classmethod
     def from_env(cls) -> "BaseConfig":
-        load_dotenv()
+        dotenv_directory = _load_environment()
+        session_path = _runtime_path(
+            "TELEGRAM_SESSION", "data/telegram-monitor", dotenv_directory
+        )
+        state_db = _runtime_path("STATE_DB", "data/forwarder.sqlite3", dotenv_directory)
         phone = os.getenv("TELEGRAM_PHONE", "").strip() or None
         return cls(
             api_id=_integer("TELEGRAM_API_ID", minimum=1),
             api_hash=_required("TELEGRAM_API_HASH"),
             phone=phone,
-            session_path=Path(os.getenv("TELEGRAM_SESSION", "data/telegram-monitor")),
-            state_db=Path(os.getenv("STATE_DB", "data/forwarder.sqlite3")),
+            session_path=session_path,
+            state_db=state_db,
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
             entity_cache_limit=_integer("TELETHON_ENTITY_CACHE_LIMIT", 500, minimum=100),
         )

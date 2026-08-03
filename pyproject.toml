@@ -7,7 +7,7 @@ name = "telegram-voice-forwarder"
 version = "0.1.0"
 description = "Monitor Telegram groups for voice messages and forward them with a user account."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
   "python-dotenv>=1.0,<2",
   "Telethon>=1.44,<2",

@@ -1,13 +1,13 @@
 # Telegram Voice Forwarder
 
-This tool monitors one or more Telegram groups and transfers new voice messages
+This tool monitors one or more Telegram chats and transfers new voice messages
 to a private channel using your personal Telegram account. It uses Telegram's
 MTProto API through Telethon; audio files are never downloaded locally.
 
 ## Requirements
 
-- Python 3.14 or newer
-- Your account must be a member of the source groups.
+- Python 3.13 or newer
+- Your account must be a member of the source chats.
 - Your account must have permission to post messages in the target channel.
 - Consent from the affected group members or another appropriate legal basis
   for forwarding their messages
@@ -47,6 +47,10 @@ MTProto API through Telethon; audio files are never downloaded locally.
    python -m telegram_voice_forwarder run
    ```
 
+Run commands from the directory containing `.env`. If `TELEGRAM_SESSION` or
+`STATE_DB` is relative and `.env` was loaded from another directory, the tool
+stops with a configuration error to prevent using the wrong runtime data.
+
 Separate multiple source chats with commas:
 
 ```dotenv
@@ -54,25 +58,16 @@ TELEGRAM_SOURCE_CHATS=-1001234567890,@another_group
 TELEGRAM_TARGET_CHAT=-1009876543210
 ```
 
-You can filter out short voice messages by setting a minimum duration in
-seconds. Use a decimal point for fractional values:
+Configure the voice-duration threshold in seconds with
+`MIN_VOICE_DURATION_SECONDS`. Use a decimal point for fractional values; `0`
+disables the threshold:
 
 ```dotenv
 MIN_VOICE_DURATION_SECONDS=3.5
 ```
 
-In this example, a voice message shorter than 3.5 seconds cannot start a new
-collection block, while a message that is exactly 3.5 seconds long can. Once a
-block is open, every following voice message from the same author is included,
-regardless of its duration. The default value `0` disables the filter.
-
 Telegram IDs for supergroups and channels usually start with `-100`. Configure
 private groups without a public username by using their numeric ID.
-
-Collection blocks are created only for basic groups and supergroups. Voice
-messages from broadcast channels are transferred individually without a
-collection header; their author, original text, timestamp, and source link are
-kept together in the voice-message caption.
 
 Telethon keeps recently encountered users, chats, and channels in memory. This
 project reduces Telethon's default cache limit from 5,000 to 500 entities. You
@@ -85,9 +80,9 @@ TELETHON_ENTITY_CACHE_LIMIT=500
 
 ## Restart behavior
 
-SQLite stores scan cursors, forwarding history, pending retries, and collection
-blocks. A restart therefore continues from the last processed message. Only the
-first scan uses `INITIAL_SCAN_LIMIT`; set it to `0` to skip initial history.
+SQLite stores the processing state, so a restart continues from the last
+processed message. Only the first scan uses `INITIAL_SCAN_LIMIT`; set it to `0`
+to skip initial history.
 
 Reset all known messages, or only a recent period, with:
 
@@ -99,12 +94,11 @@ python -m telegram_voice_forwarder reset=1W --source=-1001234567890
 ```
 
 Periods accept `H`, `D`, or `W`. A time-limited reset uses original Telegram
-timestamps and includes complete collection blocks. Both reset modes remove
-known history and safely tracked target messages before changing local state;
-older unmatched target messages are reported. Stop the monitor before running
-a reset. Use `--source=CHAT` with a numeric ID or username to limit either reset
-mode to one source chat; history, blocks, cursors, and target messages belonging
-to other sources remain untouched.
+timestamps. Both reset modes remove known history and safely tracked target
+messages before changing local state; older unmatched target messages are
+reported. Stop the monitor before running a reset. Use `--source=CHAT` with a
+numeric ID or username to limit either reset mode to one source chat; state and
+target messages belonging to other sources remain untouched.
 
 ## Architecture
 
@@ -115,83 +109,49 @@ one-way dependency and call hierarchy.
 
 ## Running continuously
 
-On Linux, the process can run as a systemd service, for example. Make sure the
-`.session` file and SQLite database are stored on a persistent volume with
-restricted access. A normal process stop with `Ctrl+C` closes the connection
-and database cleanly.
+Keep `.env`, the Telegram session, and SQLite state persistent and protected.
 
 ### Raspberry Pi OS service
 
-Configure `.env`, then run the installer from the project directory:
+Configure `.env`, then install and start the systemd service:
 
 ```bash
 bash scripts/install-raspberry-pi-service.sh
 ```
 
-The script installs missing `python3` and `python3-venv` packages through APT,
-requires Python 3.14 or newer, creates `.venv`, installs the project, and
-registers `telegram-voice-forwarder.service` with systemd. If the Telegram
-session is missing, it starts the interactive login before installing and
-starting the service. Run the script as the account that should own the
-session and runtime data; when invoked through `sudo`, it uses `SUDO_USER`.
-Root-only sessions must specify a regular account, for example
-`SERVICE_USER=pi bash scripts/install-raspberry-pi-service.sh`.
-
-The service starts automatically at boot and restarts after failures. Output is
-stored in the system journal:
+The installer adds missing APT dependencies, requires Python 3.13+, creates the
+virtual environment, performs an interactive Telegram login when needed, and
+enables automatic startup. It uses the current user, or `SUDO_USER` when run
+through `sudo`; override this with `SERVICE_USER=pi`.
 
 ```bash
 sudo systemctl status telegram-voice-forwarder.service
 sudo journalctl -u telegram-voice-forwarder.service -f
-sudo systemctl restart telegram-voice-forwarder.service
 ```
 
 ### Windows service
 
-Windows cannot run a regular Python console application directly as a native
-service. The included installer uses
-[Shawl](https://github.com/mtkennerly/shawl) as the service wrapper.
+The Windows installer uses [Shawl](https://github.com/mtkennerly/shawl). Before
+running it:
 
-Before installing the service:
-
-1. Install [gsudo](https://gerardog.github.io/gsudo/docs/install) if the script
-   should be started from a normal, non-elevated terminal:
+1. Complete setup and the interactive Telegram login.
+2. Put `shawl.exe` in `tools\`, `PATH`, or `SHAWL_EXE`.
+3. From a non-elevated terminal, install
+   [gsudo](https://gerardog.github.io/gsudo/docs/install):
 
    ```powershell
    winget install gerardog.gsudo
    ```
 
-   Restart the terminal after installation. Alternatively, set `GSUDO_EXE` to
-   the full path of `gsudo.exe`. gsudo is not required when the terminal is
-   already running as Administrator.
-2. Download `shawl.exe` from the
-   [Shawl releases](https://github.com/mtkennerly/shawl/releases) and place it
-   in `tools\shawl.exe`, or make it available through `PATH`. Alternatively,
-   set the `SHAWL_EXE` environment variable to its full path.
-3. Complete the normal project setup and interactive Telegram login first. A
-   service cannot answer the phone-number, login-code, or 2FA prompts.
-4. Open Command Prompt or PowerShell in the project directory and run:
+Install or uninstall the service from the project directory:
 
-   ```powershell
-   .\scripts\install-windows-service.bat
-   ```
+```powershell
+.\scripts\install-windows-service.bat
+.\scripts\uninstall-windows-service.bat
+```
 
-The script installs the `TelegramVoiceForwarder` service, configures automatic
-startup and restart behavior, and starts it immediately. It aborts without
-changing anything if a service with that name already exists. When necessary,
-the complete installer restarts once through gsudo in the current console, so
-only one UAC confirmation is needed. The elevated run returns its exit code to
-the original process.
-Application output is written to rotating `data\logs\service_rCURRENT.log`
-files, while Shawl diagnostics are written to
-`data\logs\shawl_rCURRENT.log`.
-
-A newly created Shawl service runs as `LocalSystem` by default. Keep `.env` and
-the Telegram session protected with restrictive file permissions. If the
-service should use a dedicated Windows account, configure that account after
-installation in `services.msc`.
-
-Useful service commands:
+The service starts automatically and restarts after failures. It runs as
+`LocalSystem` by default; select another account in `services.msc` if needed.
 
 ```powershell
 sc.exe query TelegramVoiceForwarder
@@ -199,17 +159,9 @@ sc.exe stop TelegramVoiceForwarder
 sc.exe start TelegramVoiceForwarder
 ```
 
-To stop and remove the service, run the included uninstaller from a normal or
-elevated terminal:
-
-```powershell
-.\scripts\uninstall-windows-service.bat
-```
-
-Like the installer, it uses gsudo when elevation is required. It waits for the
-service to stop, removes its Windows service registration, and returns success
-when the service is already absent. It does not delete the project, `.env`,
-Telegram session, SQLite state, or log files.
+Application and Shawl logs are stored in `data\logs\service_rCURRENT.log` and
+`data\logs\shawl_rCURRENT.log`. Uninstalling preserves all project and runtime
+data.
 
 ## Security and Telegram rules
 

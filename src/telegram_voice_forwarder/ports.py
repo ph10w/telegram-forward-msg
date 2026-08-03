@@ -42,6 +42,16 @@ class MonitoringStateRepository(Protocol):
         target_chat_id: int,
     ) -> bool: ...
 
+    def matching_original_message_ids(
+        self,
+        source_id: int,
+        target_chat_id: int,
+        message_at: datetime,
+        author_key: str,
+        duration_seconds: float,
+        before_message_id: int,
+    ) -> tuple[int, ...]: ...
+
     def mark_pending(
         self,
         source_id: int,
@@ -53,6 +63,8 @@ class MonitoringStateRepository(Protocol):
         author_label: str | None = None,
         origin_chat_id: int | None = None,
         origin_message_id: int | None = None,
+        is_forwarded: bool | None = None,
+        duration_seconds: float | None = None,
     ) -> None: ...
 
     def mark_forwarded(
@@ -68,6 +80,8 @@ class MonitoringStateRepository(Protocol):
         author_label: str | None = None,
         origin_chat_id: int | None = None,
         origin_message_id: int | None = None,
+        is_forwarded: bool | None = None,
+        duration_seconds: float | None = None,
     ) -> int | None: ...
 
     def mark_failed(self, source_id: int, message_id: int, error: str) -> None: ...
@@ -84,6 +98,8 @@ class MonitoringStateRepository(Protocol):
         author_label: str | None = None,
         origin_chat_id: int | None = None,
         origin_message_id: int | None = None,
+        is_forwarded: bool | None = None,
+        duration_seconds: float | None = None,
     ) -> None: ...
 
     def pending_jobs(self) -> list[PendingJob]: ...
