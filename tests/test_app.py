@@ -52,7 +52,13 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
             send_message=AsyncMock(return_value=SimpleNamespace(id=900)),
             edit_message=AsyncMock(),
         )
-        self.forwarder = VoiceForwarder(self.client, test_config(root), self.state)
+        self.notifier = SimpleNamespace(notify_voice=AsyncMock())
+        self.forwarder = VoiceForwarder(
+            self.client,
+            test_config(root),
+            self.state,
+            self.notifier,
+        )
         self.forwarder.target = object()
         self.forwarder.target_id = -1002
 
@@ -117,6 +123,10 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.client.edit_message.assert_not_awaited()
         self.client.forward_messages.assert_not_awaited()
+        self.notifier.notify_voice.assert_awaited_once_with(
+            "Alice Example (@alice)",
+            "https://t.me/c/2/901",
+        )
         self.assertTrue(self.state.is_complete(-1001, 11))
         self.assertEqual(self.state.cursor(-1001), 11)
         reset_plan = ResetPolicy(-1002).create_plan(
@@ -373,6 +383,10 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(duplicate.target_chat_id, -1002)
         self.assertEqual(duplicate.origin_chat_id, -1001)
         self.assertEqual(duplicate.origin_message_id, 437101)
+        self.notifier.notify_voice.assert_awaited_once_with(
+            "Max",
+            "https://t.me/c/2/901",
+        )
 
     async def test_keeps_internal_forward_when_origin_hint_is_ambiguous(self) -> None:
         original_at = datetime(2026, 8, 3, 17, 55, 58, tzinfo=timezone.utc)

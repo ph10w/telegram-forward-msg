@@ -44,6 +44,49 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.include_video_notes)
         self.assertEqual(config.entity_cache_limit, 250)
         self.assertEqual(config.state_db, Path("data/forwarder.sqlite3"))
+        self.assertIsNone(config.notification_bot_token)
+        self.assertIsNone(config.notification_chat_id)
+
+    def test_loads_private_notification_bot_settings(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+            "TELEGRAM_NOTIFICATION_BOT_TOKEN": "bot-secret",
+            "TELEGRAM_NOTIFICATION_CHAT_ID": "123456",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            config = ForwarderConfig.from_env()
+
+        self.assertEqual(config.notification_bot_token, "bot-secret")
+        self.assertEqual(config.notification_chat_id, 123456)
+        self.assertNotIn("bot-secret", repr(config))
+
+    def test_rejects_incomplete_private_notification_settings(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+            "TELEGRAM_NOTIFICATION_BOT_TOKEN": "bot-secret",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ConfigError, "müssen gemeinsam gesetzt sein"):
+                ForwarderConfig.from_env()
+
+    def test_rejects_non_private_notification_chat_id(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+            "TELEGRAM_NOTIFICATION_BOT_TOKEN": "bot-secret",
+            "TELEGRAM_NOTIFICATION_CHAT_ID": "-1002",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ConfigError, "positive ID"):
+                ForwarderConfig.from_env()
 
     def test_rejects_invalid_boolean(self) -> None:
         environment = {

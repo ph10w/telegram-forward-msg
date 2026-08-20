@@ -5,6 +5,10 @@ from .core import ResetPlan, ResetSnapshot
 from .models import PendingJob, VoiceBlock
 
 
+class VoiceNotificationGateway(Protocol):
+    async def notify_voice(self, author: str, target_message_link: str) -> None: ...
+
+
 class MonitoringStateRepository(Protocol):
     def cursor(self, source_id: int) -> int: ...
 

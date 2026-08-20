@@ -1,6 +1,6 @@
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
@@ -101,6 +101,30 @@ def _runtime_path(name: str, default: str, dotenv_directory: Path | None) -> Pat
     return path
 
 
+def _notification_settings() -> tuple[str | None, int | None]:
+    token = os.getenv("TELEGRAM_NOTIFICATION_BOT_TOKEN", "").strip() or None
+    raw_chat_id = os.getenv("TELEGRAM_NOTIFICATION_CHAT_ID", "").strip() or None
+    if token is None and raw_chat_id is None:
+        return None, None
+    if token is None or raw_chat_id is None:
+        raise ConfigError(
+            "TELEGRAM_NOTIFICATION_BOT_TOKEN und TELEGRAM_NOTIFICATION_CHAT_ID "
+            "müssen gemeinsam gesetzt sein."
+        )
+    try:
+        chat_id = int(raw_chat_id)
+    except ValueError as exc:
+        raise ConfigError(
+            "TELEGRAM_NOTIFICATION_CHAT_ID muss eine positive ganze Zahl sein."
+        ) from exc
+    if chat_id <= 0:
+        raise ConfigError(
+            "TELEGRAM_NOTIFICATION_CHAT_ID muss die positive ID eines privaten "
+            "Bot-Chats sein."
+        )
+    return token, chat_id
+
+
 @dataclass(frozen=True, slots=True)
 class BaseConfig:
     api_id: int
@@ -137,10 +161,13 @@ class ForwarderConfig(BaseConfig):
     initial_scan_limit: int
     min_voice_duration_seconds: float
     include_video_notes: bool
+    notification_bot_token: str | None = field(default=None, repr=False)
+    notification_chat_id: int | None = None
 
     @classmethod
     def from_env(cls) -> "ForwarderConfig":
         base = BaseConfig.from_env()
+        notification_bot_token, notification_chat_id = _notification_settings()
         raw_sources = _required("TELEGRAM_SOURCE_CHATS")
         sources = tuple(parse_chat_ref(item) for item in raw_sources.split(",") if item.strip())
         if not sources:
@@ -158,4 +185,6 @@ class ForwarderConfig(BaseConfig):
             initial_scan_limit=_integer("INITIAL_SCAN_LIMIT", 100),
             min_voice_duration_seconds=_number("MIN_VOICE_DURATION_SECONDS"),
             include_video_notes=_boolean("INCLUDE_VIDEO_NOTES", False),
+            notification_bot_token=notification_bot_token,
+            notification_chat_id=notification_chat_id,
         )

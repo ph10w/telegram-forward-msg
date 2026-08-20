@@ -38,6 +38,10 @@ downloads or uploads.
 - `src/telegram_voice_forwarder/notification_bot_setup.py`: interactive Bot API setup for
   discovering a private notification chat, storing its credentials, and
   sending a one-time test notification
+- `src/telegram_voice_forwarder/bot_api.py`: token-safe synchronous Bot API
+  transport shared by setup and runtime notification adapters
+- `src/telegram_voice_forwarder/notification_bot_adapter.py`: asynchronous,
+  retrying private notification adapter used by the monitoring application
 - `tests/`: unit tests for configuration, message processing, captions, and
   persistent state
 - `.env.example`: documented configuration without real credentials
@@ -102,6 +106,11 @@ python -m unittest discover -s tests -v
 - Persist `duration_seconds` for every observed voice-message job. Treat it as
   required for successfully transferred, non-forwarded jobs that can serve as
   internal-forward origin candidates.
+- Keep the notification adapter policy-free. Invoke it only after Telegram has
+  returned a target-message ID and the successful transfer has been persisted;
+  pass only the original author and target-message link. It must not inspect or
+  reproduce source filtering, duration, block, forwarding, or deduplication
+  rules. Bot API failures must not roll back or duplicate the transfer.
 - `INITIAL_SCAN_LIMIT` only controls the first scan after the cursor has been
   reset.
 - The `reset` command removes both scan cursors and known-message history so

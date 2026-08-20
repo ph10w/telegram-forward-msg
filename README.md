@@ -57,7 +57,9 @@ MTProto API through Telethon; audio files are never downloaded locally.
 
    The command validates the token, identifies your private bot chat through a
    unique Start link, stores the token and chat ID in `.env`, and sends a test
-   notification. It does not add the bot to the target channel.
+   notification. It does not add the bot to the target channel. Once configured,
+   every successfully transferred voice message triggers a private notification
+   containing its author and a link to the message in the target channel.
 
 6. Add the source and target IDs to `.env`, then start monitoring:
 

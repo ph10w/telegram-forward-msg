@@ -18,7 +18,7 @@ from .core import (
     MessageFacts,
     SourceKind,
 )
-from .ports import MonitoringStateRepository
+from .ports import MonitoringStateRepository, VoiceNotificationGateway
 
 LOGGER = logging.getLogger(__name__)
 CAPTION_LIMIT = 1024
@@ -265,10 +265,12 @@ class VoiceForwarder:
         client: TelegramClient,
         config: ForwarderConfig,
         state: MonitoringStateRepository,
+        notifier: VoiceNotificationGateway | None = None,
     ) -> None:
         self.client = client
         self.config = config
         self.state = state
+        self.notifier = notifier
         self.sources: dict[int, ResolvedSource] = {}
         self.target: Any = None
         self.target_id: int | None = None
@@ -566,6 +568,7 @@ class VoiceForwarder:
                     "Anzahl in Sammelnachricht %s konnte nicht aktualisiert werden",
                     block.header_message_id,
                 )
+        await self._notify_voice(block.author_label, target_message_id)
         LOGGER.info(
             "Sprachnachricht weitergeleitet (Quelle %s, Nachricht %s)",
             source_id,
@@ -699,6 +702,7 @@ class VoiceForwarder:
                 source_id,
                 message.id,
             )
+        await self._notify_voice(author_label, target_message_id)
         LOGGER.info(
             "Sprachnachricht ohne Sammelblock übertragen "
             "(Quelle %s, Nachricht %s, Autor %s)",
@@ -706,6 +710,31 @@ class VoiceForwarder:
             message.id,
             author_label,
         )
+
+    async def _notify_voice(
+        self,
+        author_label: str,
+        target_message_id: int | None,
+    ) -> None:
+        if (
+            self.notifier is None
+            or self.target_id is None
+            or target_message_id is None
+        ):
+            return
+        target_username = getattr(self.target, "username", None)
+        link = telegram_message_link(
+            self.target_id,
+            target_message_id,
+            username=target_username,
+        )
+        if link is None:
+            LOGGER.warning(
+                "Kein Telegram-Link für Bot-Benachrichtigung zu Zielnachricht %s",
+                target_message_id,
+            )
+            return
+        await self.notifier.notify_voice(author_label, link)
 
     async def _send_with_retry(
         self,

@@ -5,10 +5,12 @@ from pathlib import Path
 from telethon.errors import RPCError
 
 from .app import VoiceForwarder
+from .bot_api import BotApi
 from .config import BaseConfig, ChatRef, ForwarderConfig
 from .errors import TelegramServiceError
 from .models import DialogInfo
 from .notification_bot_setup import setup_notification_bot as configure_notification_bot
+from .notification_bot_adapter import BotVoiceNotifier
 from .reset_service import ResetResult, reset_scan_state
 from .state import StateStore
 from .telegram_adapter import (
@@ -28,10 +30,19 @@ def setup_notification_bot(env_path: Path) -> None:
 async def run_monitoring(config: ForwarderConfig) -> None:
     client = build_client(config)
     state = StateStore(config.state_db)
+    notifier = (
+        BotVoiceNotifier(
+            BotApi(config.notification_bot_token),
+            config.notification_chat_id,
+        )
+        if config.notification_bot_token is not None
+        and config.notification_chat_id is not None
+        else None
+    )
     try:
         name, user_id = await start_client(client, config)
         LOGGER.info("Angemeldet als %s (ID %s)", name, user_id)
-        await VoiceForwarder(client, config, state).run()
+        await VoiceForwarder(client, config, state, notifier).run()
     except RPCError as exc:
         raise TelegramServiceError(str(exc)) from exc
     finally:

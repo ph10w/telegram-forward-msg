@@ -1,65 +1,22 @@
 """Configure a Telegram bot for private forwarding notifications."""
 
 import getpass
-import json
 import os
 import secrets
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from dotenv import dotenv_values
 
-from .errors import NotificationBotSetupError
+from .bot_api import BotApi
+from .errors import NotificationBotSetupError, TelegramBotApiError
 
 TOKEN_VARIABLE = "TELEGRAM_NOTIFICATION_BOT_TOKEN"
 CHAT_ID_VARIABLE = "TELEGRAM_NOTIFICATION_CHAT_ID"
 POLL_TIMEOUT_SECONDS = 30
 SETUP_TIMEOUT_SECONDS = 180
-
-
-class BotApi:
-    def __init__(self, token: str) -> None:
-        self._base_url = f"https://api.telegram.org/bot{token}/"
-
-    def call(self, method: str, **parameters: object) -> Any:
-        encoded = urlencode(
-            {
-                key: json.dumps(value) if isinstance(value, (list, dict)) else value
-                for key, value in parameters.items()
-                if value is not None
-            }
-        ).encode("utf-8")
-        request = Request(
-            self._base_url + method,
-            data=encoded,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=POLL_TIMEOUT_SECONDS + 10) as response:
-                payload = json.load(response)
-        except HTTPError as exc:
-            try:
-                payload = json.loads(exc.read().decode("utf-8"))
-                description = payload.get("description", "Telegram API error")
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                description = f"Telegram API returned HTTP {exc.code}"
-            raise NotificationBotSetupError(str(description)) from None
-        except URLError as exc:
-            raise NotificationBotSetupError(
-                f"Telegram API is unavailable: {exc.reason}"
-            ) from None
-
-        if not payload.get("ok"):
-            raise NotificationBotSetupError(
-                str(payload.get("description", "Telegram API error"))
-            )
-        return payload.get("result")
 
 
 def _configured_token(env_path: Path) -> str | None:
@@ -217,5 +174,7 @@ def setup_notification_bot(env_path: Path) -> None:
             disable_notification=False,
         )
         print("Configuration saved to .env and test notification sent.")
+    except TelegramBotApiError as exc:
+        raise NotificationBotSetupError(str(exc)) from exc
     except OSError as exc:
         raise NotificationBotSetupError(f"Could not update .env: {exc}") from exc
