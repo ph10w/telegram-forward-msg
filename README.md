@@ -139,6 +139,13 @@ Configure `.env`, then install and start the systemd service:
 bash scripts/install-raspberry-pi-service.sh
 ```
 
+Deployments mit `scripts/deploy-raspi.ps1` schreiben den Commit des sauberen
+getrackten Arbeitsbaums nach `.source-revision`. Diese nicht geheime Datei wird
+vom Raspberry-Pi-Konfigurationssnapshot als Quellrevision des installierten
+Dienstes inventarisiert. Bei getrackten, nicht committeten Änderungen bricht
+das Deployment ab, weil der Commit den übertragenen Quellstand sonst nicht
+eindeutig beschreiben würde.
+
 The installer adds missing APT dependencies, requires Python 3.13+, creates the
 virtual environment, performs an interactive Telegram login when needed, and
 enables automatic startup. It uses the current user, or `SUDO_USER` when run
