@@ -146,7 +146,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
-WorkingDirectory=$(systemd_quote "$PROJECT_DIR")
+WorkingDirectory=$PROJECT_DIR
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$(systemd_quote "$PYTHON_EXE") -m telegram_voice_forwarder run
 Restart=always

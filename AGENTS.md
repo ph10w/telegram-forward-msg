@@ -35,6 +35,9 @@ downloads or uploads.
   where use cases and concrete adapters are wired together
 - `src/telegram_voice_forwarder/cli.py`: argument parsing, command dispatch, and
   user-facing command output
+- `src/telegram_voice_forwarder/notification_bot_setup.py`: interactive Bot API setup for
+  discovering a private notification chat, storing its credentials, and
+  sending a one-time test notification
 - `tests/`: unit tests for configuration, message processing, captions, and
   persistent state
 - `.env.example`: documented configuration without real credentials

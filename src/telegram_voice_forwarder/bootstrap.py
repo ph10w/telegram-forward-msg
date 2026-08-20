@@ -1,5 +1,6 @@
 import logging
 from datetime import timedelta
+from pathlib import Path
 
 from telethon.errors import RPCError
 
@@ -7,6 +8,7 @@ from .app import VoiceForwarder
 from .config import BaseConfig, ChatRef, ForwarderConfig
 from .errors import TelegramServiceError
 from .models import DialogInfo
+from .notification_bot_setup import setup_notification_bot as configure_notification_bot
 from .reset_service import ResetResult, reset_scan_state
 from .state import StateStore
 from .telegram_adapter import (
@@ -17,6 +19,10 @@ from .telegram_adapter import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def setup_notification_bot(env_path: Path) -> None:
+    configure_notification_bot(env_path)
 
 
 async def run_monitoring(config: ForwarderConfig) -> None:

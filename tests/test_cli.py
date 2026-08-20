@@ -14,6 +14,12 @@ class CliTests(unittest.TestCase):
     def test_keeps_full_reset_command(self) -> None:
         self.assertEqual(parse_command("reset"), ("reset", None))
 
+    def test_parses_notification_bot_setup_command(self) -> None:
+        self.assertEqual(
+            parse_command("setup-notification-bot"),
+            ("setup-notification-bot", None),
+        )
+
     def test_parses_numeric_and_named_reset_sources(self) -> None:
         numeric = _parser().parse_args(["reset=1W", "--source=-1001"])
         named = _parser().parse_args(["reset", "--source=@group"])

@@ -4,10 +4,16 @@ import logging
 import re
 import sys
 from datetime import timedelta
+from pathlib import Path
 
-from .bootstrap import list_available_chats, reset_forwarder, run_monitoring
+from .bootstrap import (
+    list_available_chats,
+    reset_forwarder,
+    run_monitoring,
+    setup_notification_bot,
+)
 from .config import BaseConfig, ChatRef, ConfigError, ForwarderConfig, parse_chat_ref
-from .errors import TelegramServiceError
+from .errors import NotificationBotSetupError, TelegramServiceError
 
 RESET_PERIOD_PATTERN = re.compile(r"^(?P<amount>[1-9]\d*)(?P<unit>[HDW])$", re.IGNORECASE)
 
@@ -22,9 +28,9 @@ def _parser() -> argparse.ArgumentParser:
         nargs="?",
         default="run",
         help=(
-            "Monitoring starten, Chat-IDs anzeigen oder Scan-Zustand vollständig "
-            "beziehungsweise zeitlich begrenzt zurücksetzen, z. B. reset=1W "
-            "(Standard: run)."
+            "Monitoring starten, Chat-IDs anzeigen, den Benachrichtigungs-Bot "
+            "einrichten oder Scan-Zustand vollständig beziehungsweise zeitlich "
+            "begrenzt zurücksetzen, z. B. reset=1W (Standard: run)."
         ),
     )
     parser.add_argument(
@@ -40,7 +46,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def parse_command(value: str) -> tuple[str, timedelta | None]:
-    if value in {"run", "list-chats"}:
+    if value in {"run", "list-chats", "setup-notification-bot"}:
         return value, None
     if value == "reset":
         return value, None
@@ -82,7 +88,9 @@ def main() -> None:
         source_chat: ChatRef | None = args.source
         if source_chat is not None and command != "reset":
             raise ConfigError("--source kann nur mit reset verwendet werden.")
-        if command == "reset":
+        if command == "setup-notification-bot":
+            setup_notification_bot(Path.cwd() / ".env")
+        elif command == "reset":
             config = ForwarderConfig.from_env()
             _configure_logging(config.log_level)
             result = asyncio.run(
@@ -131,6 +139,9 @@ def main() -> None:
         raise SystemExit(2) from exc
     except TelegramServiceError as exc:
         print(f"Telegram-Fehler: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except NotificationBotSetupError as exc:
+        print(f"Bot-Setup-Fehler: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     except KeyboardInterrupt:
         print("Monitoring beendet.")

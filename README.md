@@ -41,7 +41,25 @@ MTProto API through Telethon; audio files are never downloaded locally.
    stored locally at `TELEGRAM_SESSION`. Treat the generated `.session` file
    like a password.
 
-5. Add the source and target IDs to `.env`, then start monitoring:
+5. Optionally configure private bot notifications:
+
+   - Open [@BotFather](https://t.me/BotFather) in Telegram and make sure it is
+     the verified bot.
+   - Send `/newbot`.
+   - Enter a display name and then a unique username ending in `bot`.
+   - Copy the HTTP API token returned by BotFather. Treat it like a password and
+     never share or commit it.
+   - Run the setup command and paste the token when prompted:
+
+   ```powershell
+   python -m telegram_voice_forwarder setup-notification-bot
+   ```
+
+   The command validates the token, identifies your private bot chat through a
+   unique Start link, stores the token and chat ID in `.env`, and sends a test
+   notification. It does not add the bot to the target channel.
+
+6. Add the source and target IDs to `.env`, then start monitoring:
 
    ```powershell
    python -m telegram_voice_forwarder run
