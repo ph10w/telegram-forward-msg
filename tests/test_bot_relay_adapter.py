@@ -9,7 +9,10 @@ from telegram_voice_forwarder.bot_relay_adapter import BotRelayClient
 
 class BotRelayClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_starts_private_relay_without_target_access_for_user(self) -> None:
-        source_client = SimpleNamespace(get_entity=AsyncMock(return_value=object()))
+        source_client = SimpleNamespace(
+            get_input_entity=AsyncMock(return_value=object()),
+            get_entity=AsyncMock(),
+        )
         relay = BotRelayClient(Mock(), source_client, -1002)
         relay._call = AsyncMock(
             side_effect=[
@@ -21,7 +24,8 @@ class BotRelayClientTests(unittest.IsolatedAsyncioTestCase):
 
         await relay.start(123)
 
-        source_client.get_entity.assert_awaited_once_with("@publisher_bot")
+        source_client.get_input_entity.assert_awaited_once_with(9)
+        source_client.get_entity.assert_not_awaited()
         self.assertEqual(relay._user_id, 123)
         self.assertEqual(relay._offset, 42)
 

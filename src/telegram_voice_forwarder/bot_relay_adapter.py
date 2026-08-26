@@ -109,9 +109,15 @@ class BotRelayClient:
             )
         identity = await self._call("getMe")
         username = identity.get("username") if isinstance(identity, dict) else None
+        bot_id = identity.get("id") if isinstance(identity, dict) else None
         if not username:
             raise TelegramBotApiError("Telegram lieferte keinen Benutzernamen für den Bot.")
-        self._bot_entity = await self._source_client.get_entity(f"@{username}")
+        if not isinstance(bot_id, int):
+            raise TelegramBotApiError("Telegram lieferte keine ID für den Bot.")
+        try:
+            self._bot_entity = await self._source_client.get_input_entity(bot_id)
+        except ValueError:
+            self._bot_entity = await self._source_client.get_entity(f"@{username}")
         self._user_id = user_id
         updates = await self._call("getUpdates", offset=-1, timeout=0, limit=1)
         if updates:
