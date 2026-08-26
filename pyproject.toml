@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "telegram-voice-forwarder"
 version = "0.1.0"
-description = "Monitor Telegram groups for voice messages and forward them with a user account."
+description = "Monitor Telegram groups with a user account and publish voice messages through a bot."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

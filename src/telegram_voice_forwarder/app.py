@@ -18,7 +18,8 @@ from .core import (
     MessageFacts,
     SourceKind,
 )
-from .ports import MonitoringStateRepository, VoiceNotificationGateway
+from .errors import TelegramBotApiError
+from .ports import MonitoringStateRepository
 
 LOGGER = logging.getLogger(__name__)
 CAPTION_LIMIT = 1024
@@ -265,12 +266,12 @@ class VoiceForwarder:
         client: TelegramClient,
         config: ForwarderConfig,
         state: MonitoringStateRepository,
-        notifier: VoiceNotificationGateway | None = None,
+        target_client: Any | None = None,
     ) -> None:
         self.client = client
         self.config = config
         self.state = state
-        self.notifier = notifier
+        self.target_client = target_client or client
         self.sources: dict[int, ResolvedSource] = {}
         self.target: Any = None
         self.target_id: int | None = None
@@ -278,8 +279,13 @@ class VoiceForwarder:
 
     async def resolve_chats(self) -> None:
         LOGGER.info("Löse Telegram-Zielchat %s auf", self.config.target_chat)
-        self.target = await self._resolve_entity(self.config.target_chat)
-        self.target_id = utils.get_peer_id(self.target)
+        self.target = await self._resolve_target_entity(self.config.target_chat)
+        explicit_target_id = getattr(self.target, "id", None)
+        self.target_id = (
+            explicit_target_id
+            if isinstance(explicit_target_id, int) and explicit_target_id < 0
+            else utils.get_peer_id(self.target)
+        )
 
         for reference in self.config.source_chats:
             LOGGER.info("Löse Telegram-Quellchat %s auf", reference)
@@ -297,7 +303,7 @@ class VoiceForwarder:
         LOGGER.info(
             "Überwache %s Quelle(n); Ziel: %s (ID %s)",
             len(self.sources),
-            utils.get_display_name(self.target),
+            getattr(self.target, "title", None) or utils.get_display_name(self.target),
             self.target_id,
         )
 
@@ -311,6 +317,17 @@ class VoiceForwarder:
             )
             await self.client.get_dialogs()
             return await self.client.get_entity(reference)
+
+    async def _resolve_target_entity(self, reference: int | str) -> Any:
+        try:
+            return await self.target_client.get_entity(reference)
+        except ValueError:
+            LOGGER.info(
+                "Telegram-Ziel %s fehlt im Bot-Cache; lade Bot-Dialogliste",
+                reference,
+            )
+            await self.target_client.get_dialogs()
+            return await self.target_client.get_entity(reference)
 
     async def process_message(
         self,
@@ -486,7 +503,7 @@ class VoiceForwarder:
                         duration_seconds=duration,
                     )
                     try:
-                        header = await self.client.send_message(
+                        header = await self.target_client.send_message(
                             self.target,
                             collection_header(author_label, 1),
                             parse_mode=None,
@@ -557,18 +574,17 @@ class VoiceForwarder:
             )
         if block_count is not None and block_count > 1:
             try:
-                await self.client.edit_message(
+                await self.target_client.edit_message(
                     self.target,
                     block.header_message_id,
                     collection_header(block.author_label, block_count),
                     parse_mode=None,
                 )
-            except RPCError:
+            except (RPCError, TelegramBotApiError):
                 LOGGER.exception(
                     "Anzahl in Sammelnachricht %s konnte nicht aktualisiert werden",
                     block.header_message_id,
                 )
-        await self._notify_voice(block.author_label, target_message_id)
         LOGGER.info(
             "Sprachnachricht weitergeleitet (Quelle %s, Nachricht %s)",
             source_id,
@@ -702,7 +718,6 @@ class VoiceForwarder:
                 source_id,
                 message.id,
             )
-        await self._notify_voice(author_label, target_message_id)
         LOGGER.info(
             "Sprachnachricht ohne Sammelblock übertragen "
             "(Quelle %s, Nachricht %s, Autor %s)",
@@ -710,31 +725,6 @@ class VoiceForwarder:
             message.id,
             author_label,
         )
-
-    async def _notify_voice(
-        self,
-        author_label: str,
-        target_message_id: int | None,
-    ) -> None:
-        if (
-            self.notifier is None
-            or self.target_id is None
-            or target_message_id is None
-        ):
-            return
-        target_username = getattr(self.target, "username", None)
-        link = telegram_message_link(
-            self.target_id,
-            target_message_id,
-            username=target_username,
-        )
-        if link is None:
-            LOGGER.warning(
-                "Kein Telegram-Link für Bot-Benachrichtigung zu Zielnachricht %s",
-                target_message_id,
-            )
-            return
-        await self.notifier.notify_voice(author_label, link)
 
     async def _send_with_retry(
         self,
@@ -762,16 +752,21 @@ class VoiceForwarder:
 
         for attempt in range(1, retries + 1):
             try:
-                if message.voice and link:
-                    sent = await self.client.send_file(
-                        self.target,
-                        message.voice,
+                if self.target_client is self.client:
+                    sent = await self._send_with_user_account(
+                        message,
+                        link=link,
                         caption=caption,
-                        formatting_entities=entities,
-                        voice_note=True,
+                        entities=entities,
                     )
                 else:
-                    sent = await self.client.forward_messages(self.target, message)
+                    sent = await self.target_client.copy_message(
+                        source_id,
+                        message.id,
+                        message,
+                        caption=caption,
+                        entities=entities,
+                    )
                 if isinstance(sent, (list, tuple)):
                     sent = sent[0] if sent else None
                 sent_id = getattr(sent, "id", None)
@@ -781,10 +776,29 @@ class VoiceForwarder:
                     raise
                 LOGGER.warning("Telegram-Limit erreicht; warte %s Sekunden", exc.seconds)
                 await asyncio.sleep(exc.seconds + 1)
-            except RPCError:
+            except (RPCError, TelegramBotApiError):
                 if attempt == retries:
                     raise
                 await asyncio.sleep(2 ** (attempt - 1))
+
+    async def _send_with_user_account(
+        self,
+        message: Any,
+        *,
+        link: str | None,
+        caption: str | None,
+        entities: list[Any] | None,
+    ) -> Any:
+        if message.voice and link:
+            return await self.client.send_file(
+                self.target,
+                message.voice,
+                caption=caption,
+                formatting_entities=entities,
+                voice_note=True,
+            )
+        return await self.client.forward_messages(self.target, message)
+
 
     async def retry_pending(self) -> None:
         jobs = self.state.pending_jobs()

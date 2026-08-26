@@ -1,14 +1,15 @@
 # Telegram Voice Forwarder
 
-This tool monitors one or more Telegram chats and transfers new voice messages
-to a private channel using your personal Telegram account. It uses Telegram's
-MTProto API through Telethon; audio files are never downloaded locally.
+This tool monitors one or more Telegram chats with your personal Telegram
+account and publishes new voice messages to a private channel through a bot.
+Audio files are never downloaded locally.
 
 ## Requirements
 
 - Python 3.13 or newer
 - Your account must be a member of the source chats.
-- Your account must have permission to post messages in the target channel.
+- A Telegram bot must be an administrator in the target channel with permission
+  to post messages. Your personal account does not need target-channel access.
 - Consent from the affected group members or another appropriate legal basis
   for forwarding their messages
 
@@ -41,27 +42,33 @@ MTProto API through Telethon; audio files are never downloaded locally.
    stored locally at `TELEGRAM_SESSION`. Treat the generated `.session` file
    like a password.
 
-5. Optionally configure private bot notifications:
+5. Add the source and target IDs to `.env`:
+
+   ```dotenv
+   TELEGRAM_SOURCE_CHATS=-1001234567890,@another_group
+   TELEGRAM_TARGET_CHAT=-1009876543210
+   ```
+
+6. Configure the publisher bot:
 
    - Open [@BotFather](https://t.me/BotFather) in Telegram and make sure it is
      the verified bot.
    - Send `/newbot`.
    - Enter a display name and then a unique username ending in `bot`.
-   - Copy the HTTP API token returned by BotFather. Treat it like a password and
-     never share or commit it.
+   - Copy the HTTP API token returned by BotFather. Treat it like a password.
+   - Add the bot to `TELEGRAM_TARGET_CHAT` as an administrator with permission
+     to post and edit messages.
    - Run the setup command and paste the token when prompted:
 
    ```powershell
    python -m telegram_voice_forwarder setup-notification-bot
    ```
 
-   The command validates the token, identifies your private bot chat through a
-   unique Start link, stores the token and chat ID in `.env`, and sends a test
-   notification. It does not add the bot to the target channel. Once configured,
-   every successfully transferred voice message triggers a private notification
-   containing its author and a link to the message in the target channel.
+   Follow the displayed Start link so the account can use the private bot chat
+   as a short-lived relay. The command validates target access and stores the
+   token in `.env`.
 
-6. Add the source and target IDs to `.env`, then start monitoring:
+7. Start monitoring:
 
    ```powershell
    python -m telegram_voice_forwarder run
@@ -71,12 +78,10 @@ Run commands from the directory containing `.env`. If `TELEGRAM_SESSION` or
 `STATE_DB` is relative and `.env` was loaded from another directory, the tool
 stops with a configuration error to prevent using the wrong runtime data.
 
-Separate multiple source chats with commas:
-
-```dotenv
-TELEGRAM_SOURCE_CHATS=-1001234567890,@another_group
-TELEGRAM_TARGET_CHAT=-1009876543210
-```
+The API account sends each accepted media reference to its private bot chat.
+The bot copies it server-side to the target and immediately deletes the relay
+message. The audio is not downloaded or uploaded by this tool, although the
+relay message can be visible very briefly in the private bot chat.
 
 Configure the voice-duration threshold in seconds with
 `MIN_VOICE_DURATION_SECONDS`. Use a decimal point for fractional values; `0`

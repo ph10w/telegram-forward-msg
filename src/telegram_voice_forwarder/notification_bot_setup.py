@@ -1,4 +1,4 @@
-"""Configure a Telegram bot for private forwarding notifications."""
+"""Configure the Telegram bot that publishes into the target chat."""
 
 import getpass
 import os
@@ -15,6 +15,7 @@ from .errors import NotificationBotSetupError, TelegramBotApiError
 
 TOKEN_VARIABLE = "TELEGRAM_NOTIFICATION_BOT_TOKEN"
 CHAT_ID_VARIABLE = "TELEGRAM_NOTIFICATION_CHAT_ID"
+TARGET_VARIABLE = "TELEGRAM_TARGET_CHAT"
 POLL_TIMEOUT_SECONDS = 30
 SETUP_TIMEOUT_SECONDS = 180
 
@@ -89,11 +90,18 @@ def _wait_for_private_chat(
     )
 
 
-def _updated_env(contents: str, values: dict[str, str]) -> str:
+def _updated_env(
+    contents: str,
+    values: dict[str, str],
+    *,
+    remove: frozenset[str] = frozenset(),
+) -> str:
     remaining = dict(values)
     output: list[str] = []
     for line in contents.splitlines(keepends=True):
         stripped = line.lstrip()
+        if any(stripped.startswith(f"{name}=") for name in remove):
+            continue
         replaced = False
         for name in tuple(remaining):
             if stripped.startswith(f"{name}="):
@@ -109,14 +117,19 @@ def _updated_env(contents: str, values: dict[str, str]) -> str:
             output[-1] += "\n"
         if output and output[-1].strip():
             output.append("\n")
-        output.append("# Private notifications sent by the Telegram bot.\n")
+        output.append("# Bot publisher for TELEGRAM_TARGET_CHAT.\n")
         output.extend(f"{name}={value}\n" for name, value in remaining.items())
     return "".join(output)
 
 
-def _write_env(env_path: Path, values: dict[str, str]) -> None:
+def _write_env(
+    env_path: Path,
+    values: dict[str, str],
+    *,
+    remove: frozenset[str] = frozenset(),
+) -> None:
     original = env_path.read_text(encoding="utf-8")
-    updated = _updated_env(original, values)
+    updated = _updated_env(original, values, remove=remove)
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -147,33 +160,60 @@ def setup_notification_bot(env_path: Path) -> None:
         bot = BotApi(token)
         identity = bot.call("getMe")
         username = identity.get("username") if isinstance(identity, dict) else None
+        bot_id = identity.get("id") if isinstance(identity, dict) else None
         if not username:
-            raise SetupError("Telegram returned no username for this bot.")
+            raise NotificationBotSetupError(
+                "Telegram returned no username for this bot."
+            )
+        if not isinstance(bot_id, int):
+            raise NotificationBotSetupError("Telegram returned no ID for this bot.")
 
         offset = _latest_update_offset(bot)
         start_parameter = secrets.token_urlsafe(18)
         print(f"\nOpen this link and press Start:\nhttps://t.me/{username}?start={start_parameter}")
         print("Waiting up to 3 minutes for the private chat ...")
-        chat_id = _wait_for_private_chat(
+        _wait_for_private_chat(
             bot,
             offset=offset,
             start_parameter=start_parameter,
         )
 
+        target_value = dotenv_values(env_path).get(TARGET_VARIABLE)
+        if not target_value:
+            raise NotificationBotSetupError(
+                f"{TARGET_VARIABLE} is missing from .env."
+            )
+        target_chat: int | str
+        try:
+            target_chat = int(str(target_value).strip())
+        except ValueError:
+            target_chat = str(target_value).strip()
+        target = bot.call("getChat", chat_id=target_chat)
+        membership = bot.call(
+            "getChatMember",
+            chat_id=target_chat,
+            user_id=bot_id,
+        )
+        status = membership.get("status") if isinstance(membership, dict) else None
+        if status not in {"administrator", "creator"}:
+            raise NotificationBotSetupError(
+                "Add the bot to TELEGRAM_TARGET_CHAT as an administrator and rerun setup."
+            )
+        if (
+            isinstance(target, dict)
+            and target.get("type") == "channel"
+            and not membership.get("can_post_messages")
+        ):
+            raise NotificationBotSetupError(
+                "Grant the bot permission to post messages in TELEGRAM_TARGET_CHAT."
+            )
+
         _write_env(
             env_path,
-            {
-                TOKEN_VARIABLE: token,
-                CHAT_ID_VARIABLE: str(chat_id),
-            },
+            {TOKEN_VARIABLE: token},
+            remove=frozenset({CHAT_ID_VARIABLE}),
         )
-        bot.call(
-            "sendMessage",
-            chat_id=chat_id,
-            text="Telegram Voice Forwarder: Bot notifications are configured.",
-            disable_notification=False,
-        )
-        print("Configuration saved to .env and test notification sent.")
+        print("Configuration saved. The bot can publish into TELEGRAM_TARGET_CHAT.")
     except TelegramBotApiError as exc:
         raise NotificationBotSetupError(str(exc)) from exc
     except OSError as exc:

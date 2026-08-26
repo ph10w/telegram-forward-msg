@@ -28,7 +28,7 @@ def _parser() -> argparse.ArgumentParser:
         nargs="?",
         default="run",
         help=(
-            "Monitoring starten, Chat-IDs anzeigen, den Benachrichtigungs-Bot "
+            "Monitoring starten, Chat-IDs anzeigen, den Zielchat-Bot "
             "einrichten oder Scan-Zustand vollständig beziehungsweise zeitlich "
             "begrenzt zurücksetzen, z. B. reset=1W (Standard: run)."
         ),

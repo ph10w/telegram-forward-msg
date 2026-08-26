@@ -4,10 +4,9 @@ These instructions apply to the entire repository.
 
 ## Project overview
 
-Telegram Voice Forwarder is a Python 3.13+ service that signs in through a
-personal Telegram account with Telethon. It monitors configured source groups,
-filters voice messages, and publishes matching messages to a private target
-channel.
+Telegram Voice Forwarder is a Python 3.13+ service. A personal Telegram account
+monitors configured sources through Telethon; a bot publishes matching messages
+to the private target channel.
 
 The service uses Telegram media references. Do not introduce unnecessary media
 downloads or uploads.
@@ -35,13 +34,13 @@ downloads or uploads.
   where use cases and concrete adapters are wired together
 - `src/telegram_voice_forwarder/cli.py`: argument parsing, command dispatch, and
   user-facing command output
-- `src/telegram_voice_forwarder/notification_bot_setup.py`: interactive Bot API setup for
-  discovering a private notification chat, storing its credentials, and
-  sending a one-time test notification
+- `src/telegram_voice_forwarder/notification_bot_setup.py`: interactive Bot API
+  setup, private relay-chat activation, and target permission validation
 - `src/telegram_voice_forwarder/bot_api.py`: token-safe synchronous Bot API
-  transport shared by setup and runtime notification adapters
-- `src/telegram_voice_forwarder/notification_bot_adapter.py`: asynchronous,
-  retrying private notification adapter used by the monitoring application
+  transport shared by setup and runtime adapters
+- `src/telegram_voice_forwarder/bot_relay_adapter.py`: Bot API target adapter;
+  relays existing Telegram media references through the private bot chat and
+  provides Bot API target operations for monitoring and reset
 - `tests/`: unit tests for configuration, message processing, captions, and
   persistent state
 - `.env.example`: documented configuration without real credentials
@@ -106,11 +105,11 @@ python -m unittest discover -s tests -v
 - Persist `duration_seconds` for every observed voice-message job. Treat it as
   required for successfully transferred, non-forwarded jobs that can serve as
   internal-forward origin candidates.
-- Keep the notification adapter policy-free. Invoke it only after Telegram has
-  returned a target-message ID and the successful transfer has been persisted;
-  pass only the original author and target-message link. It must not inspect or
-  reproduce source filtering, duration, block, forwarding, or deduplication
-  rules. Bot API failures must not roll back or duplicate the transfer.
+- Keep the Bot API target adapter policy-free. The API account may access source
+  chats and the private bot relay only; target posts, edits, and deletes belong
+  to the bot. Relay existing Telegram media references without local media
+  download/upload, correlate them with unique markers, and delete each private
+  relay message after the target copy succeeds or fails.
 - `INITIAL_SCAN_LIMIT` only controls the first scan after the cursor has been
   reset.
 - The `reset` command removes both scan cursors and known-message history so

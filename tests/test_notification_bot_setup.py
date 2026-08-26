@@ -51,16 +51,14 @@ class NotificationBotSetupTests(unittest.TestCase):
 
         updated = _updated_env(
             original,
-            {
-                "TELEGRAM_NOTIFICATION_BOT_TOKEN": "new-token",
-                "TELEGRAM_NOTIFICATION_CHAT_ID": "456",
-            },
+            {"TELEGRAM_NOTIFICATION_BOT_TOKEN": "new-token"},
+            remove=frozenset({"TELEGRAM_NOTIFICATION_CHAT_ID"}),
         )
 
         self.assertIn("TELEGRAM_API_ID=123\n", updated)
         self.assertIn("LOG_LEVEL=INFO\n", updated)
         self.assertIn("TELEGRAM_NOTIFICATION_BOT_TOKEN=new-token\n", updated)
-        self.assertIn("TELEGRAM_NOTIFICATION_CHAT_ID=456\n", updated)
+        self.assertNotIn("TELEGRAM_NOTIFICATION_CHAT_ID=", updated)
         self.assertNotIn("old-token", updated)
         self.assertEqual(updated.count("TELEGRAM_NOTIFICATION_BOT_TOKEN="), 1)
 
