@@ -375,6 +375,37 @@ class StateStore:
         ).fetchone()
         return row is not None
 
+    def forwarded_job(
+        self, source_id: int, message_id: int
+    ) -> ForwardingJob | None:
+        row = self._connection.execute(
+            """
+            SELECT source_id, message_id, status, target_chat_id,
+                   target_message_id, block_id, source_message_at,
+                   author_key, author_label, origin_chat_id, origin_message_id
+            FROM forwarding_jobs
+            WHERE source_id = ? AND message_id = ? AND status = 'forwarded'
+            """,
+            (source_id, message_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return ForwardingJob(
+            source_id=int(row[0]),
+            message_id=int(row[1]),
+            status=JobStatus(str(row[2])),
+            target_chat_id=int(row[3]) if row[3] is not None else None,
+            target_message_id=int(row[4]) if row[4] is not None else None,
+            block_id=int(row[5]) if row[5] is not None else None,
+            source_message_at=(
+                datetime.fromisoformat(str(row[6])) if row[6] is not None else None
+            ),
+            author_key=str(row[7]) if row[7] is not None else None,
+            author_label=str(row[8]) if row[8] is not None else None,
+            origin_chat_id=int(row[9]) if row[9] is not None else None,
+            origin_message_id=int(row[10]) if row[10] is not None else None,
+        )
+
     def has_forwarded_origin(
         self,
         origin_chat_id: int,

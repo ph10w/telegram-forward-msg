@@ -162,6 +162,22 @@ class BotRelayClient:
             text=text,
         )
 
+    async def edit_caption(
+        self,
+        entity: BotTarget,
+        message_id: int,
+        caption: str,
+        entities: list[Any] | None,
+    ) -> None:
+        del entity
+        await self._call(
+            "editMessageCaption",
+            chat_id=self._target_chat,
+            message_id=message_id,
+            caption=caption,
+            caption_entities=_bot_entities(entities),
+        )
+
     async def copy_message(
         self,
         source_id: int,

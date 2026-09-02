@@ -52,6 +52,7 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
             send_file=AsyncMock(return_value=SimpleNamespace(id=901)),
             send_message=AsyncMock(return_value=SimpleNamespace(id=900)),
             edit_message=AsyncMock(),
+            edit_caption=AsyncMock(),
         )
         self.forwarder = VoiceForwarder(
             self.client,
@@ -129,6 +130,40 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(reset_plan.target_message_ids, (900, 901))
         self.assertEqual(reset_plan.unavailable_target_count, 0)
+
+    async def test_updates_forwarded_caption_after_source_edit(self) -> None:
+        voice = SimpleNamespace(
+            id=11,
+            voice=object(),
+            video_note=None,
+            raw_text="",
+            entities=[],
+            date=datetime(2026, 7, 16, 12, 50, 32, tzinfo=timezone.utc),
+            post_author=None,
+            sender_id=42,
+            sender=SimpleNamespace(
+                id=42,
+                first_name="Alice",
+                last_name=None,
+                username=None,
+            ),
+        )
+        await self.forwarder.process_message(-1001, voice)
+        voice.raw_text = "Später ergänzter Text"
+
+        await self.forwarder.process_message_edit(-1001, voice)
+
+        self.client.edit_caption.assert_awaited_once()
+        args = self.client.edit_caption.await_args.args
+        self.assertEqual(
+            args[:3],
+            (
+                self.forwarder.target,
+                901,
+                "Später ergänzter Text\n\n🕒 16.07.2026 14:50:32",
+            ),
+        )
+        self.assertEqual(args[3][-1].url, "https://t.me/c/1/11")
 
     def test_distinguishes_group_supergroup_and_channel_sources(self) -> None:
         group = Chat(

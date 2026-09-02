@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Protocol
 
 from .core import ResetPlan, ResetSnapshot
-from .models import PendingJob, VoiceBlock
+from .models import ForwardingJob, PendingJob, VoiceBlock
 
 
 class MonitoringStateRepository(Protocol):
@@ -34,6 +34,10 @@ class MonitoringStateRepository(Protocol):
     ) -> None: ...
 
     def is_complete(self, source_id: int, message_id: int) -> bool: ...
+
+    def forwarded_job(
+        self, source_id: int, message_id: int
+    ) -> ForwardingJob | None: ...
 
     def has_forwarded_origin(
         self,

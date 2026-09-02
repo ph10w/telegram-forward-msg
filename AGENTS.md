@@ -146,6 +146,9 @@ python -m unittest discover -s tests -v
   backfilled from Telegram in a separate operational migration before running
   code that relies on it; do not add an inference fallback for missing values.
 - Preserve Telegram UTF-16 entity offsets when changing captions.
+- Propagate later caption edits on already transferred source voice messages to
+  their tracked Bot API target messages. Do not create another target message
+  for an edit.
 - Private supergroup links use `https://t.me/c/<internal-id>/<message-id>` and
   only work for users who belong to the source group.
 - Voice notes are copied through their existing Telegram media reference so a

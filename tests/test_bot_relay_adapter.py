@@ -8,6 +8,30 @@ from telegram_voice_forwarder.bot_relay_adapter import BotRelayClient
 
 
 class BotRelayClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_edits_voice_caption_in_target_chat(self) -> None:
+        relay = BotRelayClient(Mock(), SimpleNamespace(), -1002)
+        relay._call = AsyncMock(return_value={"message_id": 88})
+        entity = MessageEntityTextUrl(
+            offset=0, length=4, url="https://example.test"
+        )
+
+        await relay.edit_caption(object(), 88, "text", [entity])
+
+        relay._call.assert_awaited_once_with(
+            "editMessageCaption",
+            chat_id=-1002,
+            message_id=88,
+            caption="text",
+            caption_entities=[
+                {
+                    "type": "text_link",
+                    "offset": 0,
+                    "length": 4,
+                    "url": "https://example.test",
+                }
+            ],
+        )
+
     async def test_starts_private_relay_without_target_access_for_user(self) -> None:
         source_client = SimpleNamespace(
             get_input_entity=AsyncMock(return_value=object()),

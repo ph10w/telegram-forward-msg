@@ -734,21 +734,9 @@ class VoiceForwarder:
         *,
         caption_author: str | None = None,
     ) -> int | None:
-        source = self.sources.get(source_id)
-        username = getattr(source.entity, "username", None) if source else None
-        link = telegram_message_link(source_id, message.id, username=username)
-        caption: str | None = None
-        entities: list[Any] | None = None
-        if message.voice and link:
-            original_date = message_timestamp(message).astimezone().strftime(
-                "%d.%m.%Y %H:%M:%S"
-            )
-            caption, entities = linked_caption(
-                message,
-                link,
-                original_date=original_date,
-                author=caption_author,
-            )
+        link, caption, entities = self._voice_caption(
+            source_id, message, author=caption_author
+        )
 
         for attempt in range(1, retries + 1):
             try:
@@ -780,6 +768,69 @@ class VoiceForwarder:
                 if attempt == retries:
                     raise
                 await asyncio.sleep(2 ** (attempt - 1))
+
+    def _voice_caption(
+        self,
+        source_id: int,
+        message: Any,
+        *,
+        author: str | None = None,
+    ) -> tuple[str | None, str | None, list[Any] | None]:
+        source = self.sources.get(source_id)
+        username = getattr(source.entity, "username", None) if source else None
+        link = telegram_message_link(source_id, message.id, username=username)
+        if not message.voice or link is None:
+            return link, None, None
+        original_date = message_timestamp(message).astimezone().strftime(
+            "%d.%m.%Y %H:%M:%S"
+        )
+        caption, entities = linked_caption(
+            message,
+            link,
+            original_date=original_date,
+            author=author,
+        )
+        return link, caption, entities
+
+    async def process_message_edit(self, source_id: int, message: Any) -> None:
+        if not message.voice or self.target_id is None:
+            return
+        job = self.state.forwarded_job(source_id, message.id)
+        if (
+            job is None
+            or job.target_chat_id != self.target_id
+            or job.target_message_id is None
+        ):
+            return
+        _, caption, entities = self._voice_caption(
+            source_id,
+            message,
+            author=job.author_label if job.block_id is None else None,
+        )
+        if caption is None:
+            return
+        try:
+            await self.target_client.edit_caption(
+                self.target,
+                job.target_message_id,
+                caption,
+                entities,
+            )
+        except (RPCError, TelegramBotApiError):
+            LOGGER.exception(
+                "Caption-Änderung konnte nicht übertragen werden "
+                "(Quelle %s, Nachricht %s, Ziel %s)",
+                source_id,
+                message.id,
+                job.target_message_id,
+            )
+            return
+        LOGGER.info(
+            "Caption-Änderung übertragen (Quelle %s, Nachricht %s, Ziel %s)",
+            source_id,
+            message.id,
+            job.target_message_id,
+        )
 
     async def _send_with_user_account(
         self,
@@ -867,9 +918,22 @@ class VoiceForwarder:
             async with self._processing_lock:
                 await self.process_message(source_id, event.message)
 
+        async def on_message_edited(event: events.MessageEdited.Event) -> None:
+            source_id = event.chat_id
+            if source_id not in self.sources:
+                return
+            async with self._processing_lock:
+                await self.process_message_edit(source_id, event.message)
+
         self.client.add_event_handler(
             on_new_message,
             events.NewMessage(chats=[source.entity for source in self.sources.values()]),
+        )
+        self.client.add_event_handler(
+            on_message_edited,
+            events.MessageEdited(
+                chats=[source.entity for source in self.sources.values()]
+            ),
         )
 
         # Live updates queue behind this lock while recovery establishes a clean cursor.
