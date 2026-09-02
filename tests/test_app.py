@@ -610,6 +610,108 @@ class VoiceForwarderTests(unittest.IsolatedAsyncioTestCase):
 
         self.client.send_file.assert_awaited_once()
 
+    async def test_exempt_author_short_voice_starts_block(self) -> None:
+        root = Path(self.temp_dir.name)
+        config = replace(
+            test_config(root),
+            min_voice_duration_seconds=10.0,
+            duration_exempt_authors=frozenset({"sender:42", "username:bob"}),
+        )
+        forwarder = VoiceForwarder(self.client, config, self.state)
+        forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
+        voice = SimpleNamespace(
+            id=40,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=1.0),
+            raw_text="",
+            entities=[],
+            date=None,
+            post_author=None,
+            sender_id=42,
+            sender=SimpleNamespace(
+                id=42,
+                first_name="Alice",
+                last_name=None,
+                username=None,
+            ),
+        )
+
+        await forwarder.process_message(-1001, voice)
+
+        self.client.send_file.assert_awaited_once()
+        self.client.send_message.assert_awaited_once()
+        block = self.state.active_voice_block(-1001)
+        self.assertIsNotNone(block)
+        self.assertEqual(block.voice_count, 1)
+
+    async def test_exempt_author_matches_username_without_sender_id(self) -> None:
+        root = Path(self.temp_dir.name)
+        config = replace(
+            test_config(root),
+            min_voice_duration_seconds=10.0,
+            duration_exempt_authors=frozenset({"username:alice"}),
+        )
+        forwarder = VoiceForwarder(self.client, config, self.state)
+        forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
+        voice = SimpleNamespace(
+            id=41,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=1.0),
+            raw_text="",
+            entities=[],
+            date=None,
+            post_author=None,
+            sender_id=None,
+            sender=SimpleNamespace(
+                id=None,
+                first_name="Alice",
+                last_name=None,
+                username="Alice",
+            ),
+        )
+
+        await forwarder.process_message(-1001, voice)
+
+        self.client.send_file.assert_awaited_once()
+
+    async def test_short_voice_from_other_author_stays_ignored(self) -> None:
+        root = Path(self.temp_dir.name)
+        config = replace(
+            test_config(root),
+            min_voice_duration_seconds=10.0,
+            duration_exempt_authors=frozenset({"username:bob"}),
+        )
+        forwarder = VoiceForwarder(self.client, config, self.state)
+        forwarder.target = self.forwarder.target
+        forwarder.target_id = self.forwarder.target_id
+        voice = SimpleNamespace(
+            id=42,
+            voice=object(),
+            video_note=None,
+            file=SimpleNamespace(duration=1.0),
+            raw_text="",
+            entities=[],
+            date=None,
+            post_author=None,
+            sender_id=42,
+            sender=SimpleNamespace(
+                id=42,
+                first_name="Alice",
+                last_name=None,
+                username="alice",
+            ),
+        )
+
+        await forwarder.process_message(-1001, voice)
+
+        self.client.send_file.assert_not_awaited()
+        self.client.send_message.assert_not_awaited()
+        self.assertTrue(self.state.is_complete(-1001, 42))
+
     def test_builds_public_and_private_message_links(self) -> None:
         self.assertEqual(
             telegram_message_link(-1001806942431, 433238),

@@ -91,6 +91,10 @@ python -m unittest discover -s tests -v
 - Treat `MIN_VOICE_DURATION_SECONDS` as an inclusive threshold for the first
   voice message in a collection block. Once a block is open, subsequent voice
   messages from the same author bypass the minimum-duration filter.
+- Treat authors configured in `MIN_VOICE_DURATION_EXEMPT_AUTHORS` (Telegram
+  user IDs or `@usernames`) as exempt from the minimum-duration filter for all
+  of their voice messages, including forwarded and channel ones. Collection
+  blocks form for them unchanged.
 - Keep collection blocks per source chat. A voice message from another author
   closes the active block regardless of duration. Non-voice messages close it
   only after five consecutive occurrences; a joining voice message resets that

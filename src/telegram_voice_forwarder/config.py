@@ -1,11 +1,15 @@
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
 type ChatRef = int | str
+
+_AUTHOR_ID_PATTERN = re.compile(r"[+-]?\d+")
+_AUTHOR_USERNAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{3,31}")
 
 
 class ConfigError(ValueError):
@@ -105,6 +109,26 @@ def _notification_bot_token() -> str:
     return _required("TELEGRAM_NOTIFICATION_BOT_TOKEN")
 
 
+def _duration_exempt_authors() -> frozenset[str]:
+    raw = os.getenv("MIN_VOICE_DURATION_EXEMPT_AUTHORS", "")
+    authors: set[str] = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if _AUTHOR_ID_PATTERN.fullmatch(item):
+            authors.add(f"sender:{int(item)}")
+            continue
+        username = item.removeprefix("@").casefold()
+        if not _AUTHOR_USERNAME_PATTERN.fullmatch(username):
+            raise ConfigError(
+                "MIN_VOICE_DURATION_EXEMPT_AUTHORS muss durch Kommas getrennte "
+                "Telegram-User-IDs oder @Usernames enthalten."
+            )
+        authors.add(f"username:{username}")
+    return frozenset(authors)
+
+
 @dataclass(frozen=True, slots=True)
 class BaseConfig:
     api_id: int
@@ -142,6 +166,14 @@ class ForwarderConfig(BaseConfig):
     min_voice_duration_seconds: float
     include_video_notes: bool
     notification_bot_token: str = field(default="", repr=False)
+    duration_exempt_authors: frozenset[str] = frozenset()
+
+    def is_duration_exempt_author(
+        self, author_identifiers: frozenset[str] | None
+    ) -> bool:
+        return bool(author_identifiers) and not author_identifiers.isdisjoint(
+            self.duration_exempt_authors
+        )
 
     @classmethod
     def from_env(cls) -> "ForwarderConfig":
@@ -165,4 +197,5 @@ class ForwarderConfig(BaseConfig):
             min_voice_duration_seconds=_number("MIN_VOICE_DURATION_SECONDS"),
             include_video_notes=_boolean("INCLUDE_VIDEO_NOTES", False),
             notification_bot_token=notification_bot_token,
+            duration_exempt_authors=_duration_exempt_authors(),
         )

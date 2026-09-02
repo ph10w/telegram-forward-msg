@@ -96,6 +96,62 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 ForwarderConfig.from_env()
 
+    def test_parses_duration_exempt_authors(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+            "TELEGRAM_NOTIFICATION_BOT_TOKEN": "bot-secret",
+            "MIN_VOICE_DURATION_EXEMPT_AUTHORS": " 123456789, @Alice , alice ",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            config = ForwarderConfig.from_env()
+
+        self.assertEqual(
+            config.duration_exempt_authors,
+            frozenset({"sender:123456789", "username:alice"}),
+        )
+        self.assertTrue(
+            config.is_duration_exempt_author(frozenset({"username:alice"}))
+        )
+        self.assertTrue(
+            config.is_duration_exempt_author(
+                frozenset({"sender:123456789", "username:other"})
+            )
+        )
+        self.assertFalse(config.is_duration_exempt_author(frozenset({"sender:1"})))
+        self.assertFalse(config.is_duration_exempt_author(None))
+
+    def test_defaults_to_no_duration_exempt_authors(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+            "TELEGRAM_NOTIFICATION_BOT_TOKEN": "bot-secret",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            config = ForwarderConfig.from_env()
+
+        self.assertEqual(config.duration_exempt_authors, frozenset())
+        self.assertFalse(config.is_duration_exempt_author(frozenset({"sender:1"})))
+
+    def test_rejects_invalid_duration_exempt_author(self) -> None:
+        environment = {
+            "TELEGRAM_API_ID": "123",
+            "TELEGRAM_API_HASH": "secret",
+            "TELEGRAM_SOURCE_CHATS": "-1001",
+            "TELEGRAM_TARGET_CHAT": "-1002",
+            "TELEGRAM_NOTIFICATION_BOT_TOKEN": "bot-secret",
+            "MIN_VOICE_DURATION_EXEMPT_AUTHORS": "not a name!",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(
+                ConfigError, "MIN_VOICE_DURATION_EXEMPT_AUTHORS"
+            ):
+                ForwarderConfig.from_env()
+
     def test_rejects_entity_cache_limit_below_minimum(self) -> None:
         environment = {
             "TELEGRAM_API_ID": "123",

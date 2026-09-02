@@ -53,6 +53,56 @@ class BlockPolicyTests(unittest.TestCase):
             MessageAction.IGNORE_SHORT_VOICE,
         )
 
+    def test_exempt_author_short_voice_starts_block(self) -> None:
+        short = self.voice(duration_seconds=1.0, duration_minimum_exempt=True)
+
+        self.assertEqual(
+            self.policy.decide(short, None).action,
+            MessageAction.START_BLOCK,
+        )
+
+    def test_exempt_author_short_forwarded_voice_is_standalone(self) -> None:
+        decision = self.policy.decide(
+            self.voice(
+                duration_seconds=1.0,
+                is_forwarded=True,
+                duration_minimum_exempt=True,
+            ),
+            self.active_block(),
+        )
+
+        self.assertEqual(decision.action, MessageAction.FORWARD_STANDALONE)
+        self.assertEqual(decision.close_reason, BlockCloseReason.FORWARDED_MESSAGE)
+
+    def test_exempt_author_short_channel_voice_is_standalone(self) -> None:
+        decision = self.policy.decide(
+            self.voice(
+                duration_seconds=1.0,
+                allows_blocks=False,
+                duration_minimum_exempt=True,
+            ),
+            self.active_block(),
+        )
+
+        self.assertEqual(decision.action, MessageAction.FORWARD_STANDALONE)
+        self.assertEqual(decision.close_reason, BlockCloseReason.BLOCKS_DISABLED)
+
+    def test_exempt_author_short_voice_still_closes_other_authors_block(self) -> None:
+        decision = self.policy.decide(
+            self.voice(
+                duration_seconds=1.0,
+                author_key="sender:99",
+                duration_minimum_exempt=True,
+            ),
+            self.active_block(),
+        )
+
+        self.assertEqual(decision.action, MessageAction.START_BLOCK)
+        self.assertEqual(
+            decision.close_reason,
+            BlockCloseReason.DIFFERENT_AUTHOR_OR_TARGET,
+        )
+
     def test_forwarded_voice_is_standalone_and_closes_active_block(self) -> None:
         decision = self.policy.decide(
             self.voice(is_forwarded=True),

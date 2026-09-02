@@ -48,6 +48,7 @@ class MessageFacts:
     author_key: str | None = None
     is_forwarded: bool = False
     allows_blocks: bool = True
+    duration_minimum_exempt: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +83,7 @@ class BlockPolicy:
                 active = None
             if not message.is_voice:
                 return BlockDecision(MessageAction.SKIP_NON_VOICE, close_reason)
-            duration = message.duration_seconds
-            if (
-                self.minimum_voice_duration_seconds > 0
-                and duration is not None
-                and duration < self.minimum_voice_duration_seconds
-            ):
+            if self._is_below_minimum(message):
                 return BlockDecision(MessageAction.IGNORE_SHORT_VOICE, close_reason)
             return BlockDecision(MessageAction.FORWARD_STANDALONE, close_reason)
 
@@ -101,12 +97,7 @@ class BlockPolicy:
         if message.is_forwarded:
             if active is not None:
                 close_reason = BlockCloseReason.FORWARDED_MESSAGE
-            duration = message.duration_seconds
-            if (
-                self.minimum_voice_duration_seconds > 0
-                and duration is not None
-                and duration < self.minimum_voice_duration_seconds
-            ):
+            if self._is_below_minimum(message):
                 return BlockDecision(MessageAction.IGNORE_SHORT_VOICE, close_reason)
             return BlockDecision(MessageAction.FORWARD_STANDALONE, close_reason)
 
@@ -123,14 +114,19 @@ class BlockPolicy:
         if active is not None:
             return BlockDecision(MessageAction.JOIN_BLOCK, close_reason)
 
+        if self._is_below_minimum(message):
+            return BlockDecision(MessageAction.IGNORE_SHORT_VOICE, close_reason)
+        return BlockDecision(MessageAction.START_BLOCK, close_reason)
+
+    def _is_below_minimum(self, message: MessageFacts) -> bool:
+        if message.duration_minimum_exempt:
+            return False
         duration = message.duration_seconds
-        if (
+        return (
             self.minimum_voice_duration_seconds > 0
             and duration is not None
             and duration < self.minimum_voice_duration_seconds
-        ):
-            return BlockDecision(MessageAction.IGNORE_SHORT_VOICE, close_reason)
-        return BlockDecision(MessageAction.START_BLOCK, close_reason)
+        )
 
 
 @dataclass(frozen=True, slots=True)

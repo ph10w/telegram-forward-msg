@@ -91,6 +91,16 @@ disables the threshold:
 MIN_VOICE_DURATION_SECONDS=3.5
 ```
 
+Authors who are exempt from this threshold are configured with
+`MIN_VOICE_DURATION_EXEMPT_AUTHORS` as a comma-separated list of numeric
+Telegram user IDs or `@usernames`. Every voice message from these authors is
+forwarded regardless of the threshold; collection blocks form unchanged for
+them:
+
+```dotenv
+MIN_VOICE_DURATION_EXEMPT_AUTHORS=123456789,@alice
+```
+
 Telegram IDs for supergroups and channels usually start with `-100`. Configure
 private groups without a public username by using their numeric ID.
 

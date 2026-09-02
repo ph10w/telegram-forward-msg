@@ -69,15 +69,16 @@ def telegram_message_link(
 
 
 async def message_author(message: Any) -> str:
-    _, label = await message_author_details(message)
+    _, label, _ = await message_author_details(message)
     return label
 
 
-async def message_author_details(message: Any) -> tuple[str, str]:
+async def message_author_details(message: Any) -> tuple[str, str, frozenset[str]]:
     post_author = (getattr(message, "post_author", None) or "").strip()
     if post_author:
         label = " ".join(post_author.splitlines())
-        return f"signature:{label.casefold()}", label
+        key = f"signature:{label.casefold()}"
+        return key, label, frozenset({key})
 
     sender = getattr(message, "sender", None)
     get_sender = getattr(message, "get_sender", None)
@@ -87,7 +88,7 @@ async def message_author_details(message: Any) -> tuple[str, str]:
         except RPCError:
             LOGGER.warning("Autor von Nachricht %s konnte nicht geladen werden", message.id)
     if sender is None:
-        return "unknown", "Unbekannter Autor"
+        return "unknown", "Unbekannter Autor", frozenset({"unknown"})
 
     return _entity_author_details(
         sender,
@@ -98,7 +99,7 @@ async def message_author_details(message: Any) -> tuple[str, str]:
 def _entity_author_details(
     entity: Any,
     entity_id: int | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, frozenset[str]]:
     name = " ".join(utils.get_display_name(entity).splitlines()).strip()
     if not name:
         name = " ".join(
@@ -118,13 +119,24 @@ def _entity_author_details(
         label = name or "Unbekannter Autor"
 
     if entity_id is not None:
-        return f"sender:{entity_id}", label
-    if username:
-        return f"username:{username.casefold()}", label
-    return f"label:{label.casefold()}", label
+        key = f"sender:{entity_id}"
+    elif username:
+        key = f"username:{username.casefold()}"
+    else:
+        key = f"label:{label.casefold()}"
+    identifiers = frozenset(
+        token
+        for token in (
+            f"sender:{entity_id}" if entity_id is not None else None,
+            f"username:{username.casefold()}" if username else None,
+            key,
+        )
+        if token is not None
+    )
+    return key, label, identifiers
 
 
-async def forwarded_author_details(message: Any) -> tuple[str, str]:
+async def forwarded_author_details(message: Any) -> tuple[str, str, frozenset[str]]:
     header = getattr(message, "fwd_from", None)
     if header is None:
         return await message_author_details(message)
@@ -132,7 +144,8 @@ async def forwarded_author_details(message: Any) -> tuple[str, str]:
     post_author = (getattr(header, "post_author", None) or "").strip()
     if post_author:
         label = " ".join(post_author.splitlines())
-        return f"forward-signature:{label.casefold()}", label
+        key = f"forward-signature:{label.casefold()}"
+        return key, label, frozenset({key})
 
     forward = getattr(message, "forward", None)
     entity = None
@@ -168,15 +181,17 @@ async def forwarded_author_details(message: Any) -> tuple[str, str]:
     )
     if from_name:
         label = " ".join(from_name.splitlines())
-        return f"forward-name:{label.casefold()}", label
+        key = f"forward-name:{label.casefold()}"
+        return key, label, frozenset({key})
 
     from_id = getattr(header, "from_id", None)
     if from_id is not None:
         try:
-            return f"sender:{utils.get_peer_id(from_id)}", "Unbekannter Originalautor"
+            key = f"sender:{utils.get_peer_id(from_id)}"
+            return key, "Unbekannter Originalautor", frozenset({key})
         except (TypeError, ValueError):
             pass
-    return "forward:unknown", "Unbekannter Originalautor"
+    return "forward:unknown", "Unbekannter Originalautor", frozenset({"forward:unknown"})
 
 
 def forwarded_origin(message: Any) -> tuple[int, int] | None:
@@ -362,8 +377,9 @@ class VoiceForwarder:
             active = self.state.active_voice_block(source_id)
             author_key: str | None = None
             author_label: str | None = None
+            author_identifiers: frozenset[str] | None = None
             if is_voice:
-                author_key, author_label = await (
+                author_key, author_label, author_identifiers = await (
                     forwarded_author_details(message)
                     if is_forwarded
                     else message_author_details(message)
@@ -383,6 +399,9 @@ class VoiceForwarder:
                     author_key=author_key,
                     is_forwarded=is_forwarded,
                     allows_blocks=allows_blocks,
+                    duration_minimum_exempt=self.config.is_duration_exempt_author(
+                        author_identifiers
+                    ),
                 ),
                 CoreActiveBlock(
                     author_key=active.author_key,
