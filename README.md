@@ -159,7 +159,9 @@ getrackten Arbeitsbaums nach `.source-revision`. Diese nicht geheime Datei wird
 vom Raspberry-Pi-Konfigurationssnapshot als Quellrevision des installierten
 Dienstes inventarisiert. Bei getrackten, nicht committeten Änderungen bricht
 das Deployment ab, weil der Commit den übertragenen Quellstand sonst nicht
-eindeutig beschreiben würde.
+eindeutig beschreiben würde. Die lokale `.env` ist von Git ignoriert und wird
+deshalb separat übertragen und auf dem Pi mit `600` geschützt; fehlt sie,
+bricht das Deployment ebenfalls ab.
 
 The installer adds missing APT dependencies, requires Python 3.13+, creates the
 virtual environment, performs an interactive Telegram login when needed, and

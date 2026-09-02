@@ -111,13 +111,38 @@ try {
     Write-Host "Dateien werden übertragen..."
 
     #
-    # Der Punkt ist wichtig:
-    # Dadurch werden auch versteckte Dateien wie .env übertragen.
+    # Der Punkt sorgt dafür, dass auch versteckte Dateien aus dem
+    # Staging-Verzeichnis übertragen werden. Die von Git ignorierte .env
+    # wird von git ls-files nicht gelistet und folgt deshalb separat.
     #
     & scp -r "$TempDir/." "${Pi}:${Target}/"
 
     if ($LASTEXITCODE -ne 0) {
         throw "SCP-Übertragung fehlgeschlagen."
+    }
+
+    Write-Host "Konfiguration .env wird übertragen..."
+
+    if (-not (Test-Path -LiteralPath (Join-Path $GitRoot ".env"))) {
+        throw "Die Datei .env wurde im Repository nicht gefunden."
+    }
+
+    Push-Location $GitRoot
+    try {
+        & scp ".env" "${Pi}:${Target}/.env"
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "SCP-Übertragung der .env fehlgeschlagen."
+        }
+
+        & ssh $Pi "chmod 600 '$Target/.env'"
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Schutzrechte der .env auf dem Pi konnten nicht gesetzt werden."
+        }
+    }
+    finally {
+        Pop-Location
     }
 
     Write-Host ""
